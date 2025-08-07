@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "LinkSearch (Package)": {
+      "commandName": "MsixPackage",
+      "doNotLaunchApp": true
+    },
+    "LinkSearch (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
