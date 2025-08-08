@@ -3,6 +3,7 @@
 [English](./README.md) | 简体中文
 
 ![Setting](https://i.imgur.com/fcsbu0o.gif)
+
 [PowerToys CmdPal](https://github.com/microsoft/PowerToys) 插件：在命令面板中快速搜索与打开你的[Linkwarden](https://github.com/linkwarden/linkwarden)资源，并可选接入 Rerank 服务以获得更相关的排序结果。
 
 
@@ -10,6 +11,7 @@
 
 - 高效检索：快速搜索来自 Linkwarden 的收藏并跳转至相应页面。
 - 可选重排：连接可配置的 Rerank API，按语义相关性对候选列表重排。
+
 ![Setting](https://i.imgur.com/eEM6ZtC.png)
 
 

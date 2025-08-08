@@ -3,10 +3,12 @@
 English | [简体中文](./README.zh.md)
 
 ![Setting](https://i.imgur.com/fcsbu0o.gif)
+
 [PowerToys CmdPal](https://github.com/microsoft/PowerToys) plugin to search and open your [Linkwarden](https://github.com/linkwarden/linkwarden) links quickly inside the command palette, with optional Rerank integration for better, semantic ordering.
 
 - Efficient search: quickly search from Linkwarden collections and navigate to corresponding pages.
 - Optional reranking: connect a configurable Rerank API to semantically reorder candidates.
+
 ![Setting](https://i.imgur.com/eEM6ZtC.png)
 
 
