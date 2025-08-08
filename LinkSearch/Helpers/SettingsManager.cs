@@ -56,34 +56,40 @@ public class SettingsManager : JsonSettingsManager
         "搜索输入后的延迟时间，用于减少不必要的搜索请求（300-2000毫秒）",
         "600");
 
+    private readonly TextSetting _maxResults = new(
+        Namespaced(nameof(MaxResults)),
+        "最大检索结果数量",
+        "最大检索结果数量（1-200之间）",
+        "50");
+
     public string LinkwardenBaseUrl
     {
         get
         {
-            System.Diagnostics.Debug.WriteLine("开始获取LinkwardenBaseUrl");
+            Log.Debug("开始获取LinkwardenBaseUrl");
             
             // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
             var baseUrl = _linkwardenBaseUrl.Value;
-            System.Diagnostics.Debug.WriteLine($"插件界面设置的Base URL: {baseUrl}");
+            Log.Debug($"插件界面设置的Base URL: {baseUrl}");
             
             // 如果插件界面设置不为空，则直接返回
             if (!string.IsNullOrWhiteSpace(baseUrl))
             {
-                System.Diagnostics.Debug.WriteLine("使用插件界面设置的Base URL");
+                Log.Debug("使用插件界面设置的Base URL");
                 return ValidateAndFormatUrl(baseUrl);
             }
             
             // 尝试从环境变量读取
             baseUrl = Environment.GetEnvironmentVariable("LINKWARDEN_BASE_URL");
-            System.Diagnostics.Debug.WriteLine($"环境变量中的Base URL: {baseUrl}");
+            Log.Debug($"环境变量中的Base URL: {baseUrl}");
             if (!string.IsNullOrWhiteSpace(baseUrl))
             {
-                System.Diagnostics.Debug.WriteLine("使用环境变量中的Base URL");
+                Log.Debug("使用环境变量中的Base URL");
                 return ValidateAndFormatUrl(baseUrl);
             }
             
             // 如果以上方式都未获取到有效的地址，则回退到使用默认的硬编码地址
-            System.Diagnostics.Debug.WriteLine("使用默认的Base URL");
+            Log.Debug("使用默认的Base URL");
             return ValidateAndFormatUrl("https://cloud.linkwarden.app");
         }
     }
@@ -92,30 +98,30 @@ public class SettingsManager : JsonSettingsManager
     {
         get
         {
-            System.Diagnostics.Debug.WriteLine("开始获取LinkwardenApiKey");
+            Log.Debug("开始获取LinkwardenApiKey");
             
             // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
             var apiKey = _linkwardenApiKey.Value;
-            System.Diagnostics.Debug.WriteLine($"插件界面设置的API Key: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
+            Log.Debug($"插件界面设置的API Key: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
             
             // 如果插件界面设置不为空，则直接返回
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                System.Diagnostics.Debug.WriteLine("使用插件界面设置的API Key");
+                Log.Debug("使用插件界面设置的API Key");
                 return apiKey;
             }
             
             // 尝试从环境变量读取
             apiKey = Environment.GetEnvironmentVariable("LINKWARDEN_API_KEY");
-            System.Diagnostics.Debug.WriteLine($"环境变量中的API Key: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
+            Log.Debug($"环境变量中的API Key: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                System.Diagnostics.Debug.WriteLine("使用环境变量中的API Key");
+                Log.Debug("使用环境变量中的API Key");
                 return apiKey;
             }
             
             // 如果以上方式都未获取到有效的API Key，则返回空字符串
-            System.Diagnostics.Debug.WriteLine("未获取到有效的API Key，返回空字符串");
+            Log.Debug("未获取到有效的API Key，返回空字符串");
             return string.Empty;
         }
     }
@@ -124,30 +130,30 @@ public class SettingsManager : JsonSettingsManager
     {
         get
         {
-            System.Diagnostics.Debug.WriteLine("开始获取EnableRerank");
+            Log.Debug("开始获取EnableRerank");
             
             // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
             var enableRerank = _enableRerank.Value;
-            System.Diagnostics.Debug.WriteLine($"插件界面设置的EnableRerank: {enableRerank}");
+            Log.Debug($"插件界面设置的EnableRerank: {enableRerank}");
             
             // 如果插件界面设置不为空，则直接返回
             if (enableRerank)
             {
-                System.Diagnostics.Debug.WriteLine("使用插件界面设置的EnableRerank: true");
+                Log.Debug("使用插件界面设置的EnableRerank: true");
                 return true;
             }
             
             // 尝试从环境变量读取
             var envValue = Environment.GetEnvironmentVariable("LINKSEARCH_ENABLE_RERANK");
-            System.Diagnostics.Debug.WriteLine($"环境变量中的EnableRerank: {envValue}");
+            Log.Debug($"环境变量中的EnableRerank: {envValue}");
             if (!string.IsNullOrWhiteSpace(envValue) && bool.TryParse(envValue, out var envEnableRerank))
             {
-                System.Diagnostics.Debug.WriteLine("使用环境变量中的EnableRerank");
+                Log.Debug("使用环境变量中的EnableRerank");
                 return envEnableRerank;
             }
             
             // 如果以上方式都未获取到有效的设置，则返回默认值false
-            System.Diagnostics.Debug.WriteLine("使用默认的EnableRerank: false");
+            Log.Debug("使用默认的EnableRerank: false");
             return false;
         }
     }
@@ -156,30 +162,30 @@ public class SettingsManager : JsonSettingsManager
     {
         get
         {
-            System.Diagnostics.Debug.WriteLine("开始获取RerankApiUrl");
+            Log.Debug("开始获取RerankApiUrl");
             
             // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
             var apiUrl = _rerankApiUrl.Value;
-            System.Diagnostics.Debug.WriteLine($"插件界面设置的RerankApiUrl: {apiUrl}");
+            Log.Debug($"插件界面设置的RerankApiUrl: {apiUrl}");
             
             // 如果插件界面设置不为空，则直接返回
             if (!string.IsNullOrWhiteSpace(apiUrl))
             {
-                System.Diagnostics.Debug.WriteLine("使用插件界面设置的RerankApiUrl");
+                Log.Debug("使用插件界面设置的RerankApiUrl");
                 return ValidateAndFormatUrl(apiUrl);
             }
             
             // 尝试从环境变量读取
             apiUrl = Environment.GetEnvironmentVariable("LINKSEARCH_RERANK_API_URL");
-            System.Diagnostics.Debug.WriteLine($"环境变量中的RerankApiUrl: {apiUrl}");
+            Log.Debug($"环境变量中的RerankApiUrl: {apiUrl}");
             if (!string.IsNullOrWhiteSpace(apiUrl))
             {
-                System.Diagnostics.Debug.WriteLine("使用环境变量中的RerankApiUrl");
+                Log.Debug("使用环境变量中的RerankApiUrl");
                 return ValidateAndFormatUrl(apiUrl);
             }
             
             // 如果以上方式都未获取到有效的地址，则回退到使用默认的硬编码地址
-            System.Diagnostics.Debug.WriteLine("使用默认的RerankApiUrl");
+            Log.Debug("使用默认的RerankApiUrl");
             return ValidateAndFormatUrl("https://api.siliconflow.cn/v1/rerank");
         }
     }
@@ -188,30 +194,30 @@ public class SettingsManager : JsonSettingsManager
     {
         get
         {
-            System.Diagnostics.Debug.WriteLine("开始获取RerankApiKey");
+            Log.Debug("开始获取RerankApiKey");
             
             // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
             var apiKey = _rerankApiKey.Value;
-            System.Diagnostics.Debug.WriteLine($"插件界面设置的RerankApiKey: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
+            Log.Debug($"插件界面设置的RerankApiKey: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
             
             // 如果插件界面设置不为空，则直接返回
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                System.Diagnostics.Debug.WriteLine("使用插件界面设置的RerankApiKey");
+                Log.Debug("使用插件界面设置的RerankApiKey");
                 return apiKey;
             }
             
             // 尝试从环境变量读取
             apiKey = Environment.GetEnvironmentVariable("LINKSEARCH_RERANK_API_KEY");
-            System.Diagnostics.Debug.WriteLine($"环境变量中的RerankApiKey: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
+            Log.Debug($"环境变量中的RerankApiKey: {(string.IsNullOrEmpty(apiKey) ? "未设置" : "已设置")}");
             if (!string.IsNullOrWhiteSpace(apiKey))
             {
-                System.Diagnostics.Debug.WriteLine("使用环境变量中的RerankApiKey");
+                Log.Debug("使用环境变量中的RerankApiKey");
                 return apiKey;
             }
             
             // 如果以上方式都未获取到有效的API Key，则返回空字符串
-            System.Diagnostics.Debug.WriteLine("未获取到有效的RerankApiKey，返回空字符串");
+            Log.Debug("未获取到有效的RerankApiKey，返回空字符串");
             return string.Empty;
         }
     }
@@ -220,30 +226,30 @@ public class SettingsManager : JsonSettingsManager
     {
         get
         {
-            System.Diagnostics.Debug.WriteLine("开始获取RerankModelName");
+            Log.Debug("开始获取RerankModelName");
             
             // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
             var modelName = _rerankModelName.Value;
-            System.Diagnostics.Debug.WriteLine($"插件界面设置的RerankModelName: {modelName}");
+            Log.Debug($"插件界面设置的RerankModelName: {modelName}");
             
             // 如果插件界面设置不为空，则直接返回
             if (!string.IsNullOrWhiteSpace(modelName))
             {
-                System.Diagnostics.Debug.WriteLine("使用插件界面设置的RerankModelName");
+                Log.Debug("使用插件界面设置的RerankModelName");
                 return modelName;
             }
             
             // 尝试从环境变量读取
             modelName = Environment.GetEnvironmentVariable("LINKSEARCH_RERANK_MODEL_NAME");
-            System.Diagnostics.Debug.WriteLine($"环境变量中的RerankModelName: {modelName}");
+            Log.Debug($"环境变量中的RerankModelName: {modelName}");
             if (!string.IsNullOrWhiteSpace(modelName))
             {
-                System.Diagnostics.Debug.WriteLine("使用环境变量中的RerankModelName");
+                Log.Debug("使用环境变量中的RerankModelName");
                 return modelName;
             }
             
             // 如果以上方式都未获取到有效的模型名称，则回退到使用默认的硬编码值
-            System.Diagnostics.Debug.WriteLine("使用默认的RerankModelName");
+            Log.Debug("使用默认的RerankModelName");
             return "BAAI/bge-reranker-v2-m3";
         }
     }
@@ -252,11 +258,11 @@ public class SettingsManager : JsonSettingsManager
     {
         get
         {
-            System.Diagnostics.Debug.WriteLine("开始获取SearchDelayMilliseconds");
+            Log.Debug("开始获取SearchDelayMilliseconds");
             
             // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
             var delayText = _searchDelayMilliseconds.Value;
-            System.Diagnostics.Debug.WriteLine($"插件界面设置的SearchDelayMilliseconds: {delayText}");
+            Log.Debug($"插件界面设置的SearchDelayMilliseconds: {delayText}");
             
             int delay = 600; // 默认值，从500ms增加到600ms
             
@@ -266,22 +272,22 @@ public class SettingsManager : JsonSettingsManager
                 // 验证范围，最小值从100ms增加到300ms
                 if (parsedDelay >= 300 && parsedDelay <= 2000)
                 {
-                    System.Diagnostics.Debug.WriteLine("使用插件界面设置的SearchDelayMilliseconds");
+                    Log.Debug("使用插件界面设置的SearchDelayMilliseconds");
                     return parsedDelay;
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"插件界面设置的SearchDelayMilliseconds超出范围: {parsedDelay}");
+                    Log.Debug($"插件界面设置的SearchDelayMilliseconds超出范围: {parsedDelay}");
                     // 如果设置值小于最小值，则使用最小值
                     if (parsedDelay < 300)
                     {
-                        System.Diagnostics.Debug.WriteLine($"插件界面设置的SearchDelayMilliseconds小于最小值，使用最小值: 300");
+                        Log.Debug($"插件界面设置的SearchDelayMilliseconds小于最小值，使用最小值: 300");
                         return 300;
                     }
                     // 如果设置值大于最大值，则使用最大值
                     if (parsedDelay > 2000)
                     {
-                        System.Diagnostics.Debug.WriteLine($"插件界面设置的SearchDelayMilliseconds大于最大值，使用最大值: 2000");
+                        Log.Debug($"插件界面设置的SearchDelayMilliseconds大于最大值，使用最大值: 2000");
                         return 2000;
                     }
                 }
@@ -289,36 +295,110 @@ public class SettingsManager : JsonSettingsManager
             
             // 尝试从环境变量读取
             var envDelay = Environment.GetEnvironmentVariable("LINKSEARCH_SEARCH_DELAY_MS");
-            System.Diagnostics.Debug.WriteLine($"环境变量中的SearchDelayMilliseconds: {envDelay}");
+            Log.Debug($"环境变量中的SearchDelayMilliseconds: {envDelay}");
             if (!string.IsNullOrWhiteSpace(envDelay) && int.TryParse(envDelay, out var parsedEnvDelay))
             {
                 // 验证范围，最小值从100ms增加到300ms
                 if (parsedEnvDelay >= 300 && parsedEnvDelay <= 2000)
                 {
-                    System.Diagnostics.Debug.WriteLine("使用环境变量中的SearchDelayMilliseconds");
+                    Log.Debug("使用环境变量中的SearchDelayMilliseconds");
                     return parsedEnvDelay;
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"环境变量中的SearchDelayMilliseconds超出范围: {parsedEnvDelay}");
+                    Log.Debug($"环境变量中的SearchDelayMilliseconds超出范围: {parsedEnvDelay}");
                     // 如果设置值小于最小值，则使用最小值
                     if (parsedEnvDelay < 300)
                     {
-                        System.Diagnostics.Debug.WriteLine($"环境变量中的SearchDelayMilliseconds小于最小值，使用最小值: 300");
+                        Log.Debug($"环境变量中的SearchDelayMilliseconds小于最小值，使用最小值: 300");
                         return 300;
                     }
                     // 如果设置值大于最大值，则使用最大值
                     if (parsedEnvDelay > 2000)
                     {
-                        System.Diagnostics.Debug.WriteLine($"环境变量中的SearchDelayMilliseconds大于最大值，使用最大值: 2000");
+                        Log.Debug($"环境变量中的SearchDelayMilliseconds大于最大值，使用最大值: 2000");
                         return 2000;
                     }
                 }
             }
             
             // 如果以上方式都未获取到有效的延迟时间，则返回默认值
-            System.Diagnostics.Debug.WriteLine("使用默认的SearchDelayMilliseconds: 600");
+            Log.Debug("使用默认的SearchDelayMilliseconds: 600");
             return delay;
+        }
+    }
+
+    public int MaxResults
+    {
+        get
+        {
+            Log.Debug("开始获取MaxResults");
+            
+            // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
+            var maxResultsText = _maxResults.Value;
+            Log.Debug($"插件界面设置的MaxResults: {maxResultsText}");
+            
+            int maxResults = 50; // 默认值
+            
+            // 如果插件界面设置不为空，则尝试解析
+            if (!string.IsNullOrWhiteSpace(maxResultsText) && int.TryParse(maxResultsText, out var parsedMaxResults))
+            {
+                // 验证范围，确保在1-200之间
+                if (parsedMaxResults >= 1 && parsedMaxResults <= 200)
+                {
+                    Log.Debug("使用插件界面设置的MaxResults");
+                    return parsedMaxResults;
+                }
+                else
+                {
+                    Log.Debug($"插件界面设置的MaxResults超出范围: {parsedMaxResults}");
+                    // 如果设置值小于最小值，则使用最小值
+                    if (parsedMaxResults < 1)
+                    {
+                        Log.Debug($"插件界面设置的MaxResults小于最小值，使用最小值: 1");
+                        return 1;
+                    }
+                    // 如果设置值大于最大值，则使用最大值
+                    if (parsedMaxResults > 200)
+                    {
+                        Log.Debug($"插件界面设置的MaxResults大于最大值，使用最大值: 200");
+                        return 200;
+                    }
+                }
+            }
+            
+            // 尝试从环境变量读取
+            var envMaxResults = Environment.GetEnvironmentVariable("LINKSEARCH_MAX_RESULTS");
+            Log.Debug($"环境变量中的MaxResults: {envMaxResults}");
+            if (!string.IsNullOrWhiteSpace(envMaxResults) && int.TryParse(envMaxResults, out var parsedEnvMaxResults))
+            {
+                // 验证范围，确保在1-200之间
+                if (parsedEnvMaxResults >= 1 && parsedEnvMaxResults <= 200)
+                {
+                    Log.Debug("使用环境变量中的MaxResults");
+                    return parsedEnvMaxResults;
+                }
+                else
+                {
+                    Log.Debug($"环境变量中的MaxResults超出范围: {parsedEnvMaxResults}");
+                    // 如果设置值小于最小值，则使用最小值
+                    if (parsedEnvMaxResults < 1)
+                    {
+                        Log.Debug($"环境变量中的MaxResults小于最小值，使用最小值: 1");
+                        return 1;
+                    }
+                    // 如果设置值大于最大值，则使用最大值
+                    if (parsedEnvMaxResults > 200)
+                    {
+                        Log.Debug($"环境变量中的MaxResults大于最大值，使用最大值: 200");
+                        return 200;
+                    }
+                }
+            }
+            
+            // 如果以上方式都未获取到有效的最大结果数量，则返回默认值
+            Log.Debug("使用默认的MaxResults: 50");
+            return maxResults;
         }
     }
 
@@ -342,6 +422,7 @@ public class SettingsManager : JsonSettingsManager
         Settings.Add(_rerankApiKey);
         Settings.Add(_rerankModelName);
         Settings.Add(_searchDelayMilliseconds);
+        Settings.Add(_maxResults);
 
         // Load settings from file upon initialization
         LoadSettings();
@@ -357,11 +438,11 @@ public class SettingsManager : JsonSettingsManager
     private static string ValidateAndFormatUrl(string url)
     {
         // 调试日志：记录原始URL
-        System.Diagnostics.Debug.WriteLine($"验证原始URL: {url}");
+        Log.Debug($"验证原始URL: {url}");
         
         if (string.IsNullOrWhiteSpace(url))
         {
-            System.Diagnostics.Debug.WriteLine("URL为空或空白");
+            Log.Debug("URL为空或空白");
             return string.Empty;
         }
 
@@ -370,28 +451,28 @@ public class SettingsManager : JsonSettingsManager
             !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
         {
             url = "https://" + url;
-            System.Diagnostics.Debug.WriteLine($"添加协议前缀后的URL: {url}");
+            Log.Debug($"添加协议前缀后的URL: {url}");
         }
 
         // 移除URL末尾的斜杠
         url = url.TrimEnd('/');
-        System.Diagnostics.Debug.WriteLine($"移除末尾斜杠后的URL: {url}");
+        Log.Debug($"移除末尾斜杠后的URL: {url}");
 
         // 验证URL格式
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
-            System.Diagnostics.Debug.WriteLine($"URL格式无效，无法创建Uri对象: {url}");
+            Log.Debug($"URL格式无效，无法创建Uri对象: {url}");
             return string.Empty;
         }
 
         // 验证URL方案
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
         {
-            System.Diagnostics.Debug.WriteLine($"URL方案无效: {uri.Scheme}");
+            Log.Debug($"URL方案无效: {uri.Scheme}");
             return string.Empty;
         }
 
-        System.Diagnostics.Debug.WriteLine($"URL验证成功: {url}");
+        Log.Debug($"URL验证成功: {url}");
         return url;
     }
 

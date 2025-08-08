@@ -36,7 +36,7 @@ namespace LinkSearch
         {
 // #if DEBUG
 //             // 调试日志：验证构造函数被调用
-//             System.Diagnostics.Debug.WriteLine("LinkResult 构造函数被调用");
+//             Log.Debug("LinkResult 构造函数被调用");
 // #endif
             
             // 初始化引用类型属性为默认值
@@ -58,7 +58,7 @@ namespace LinkSearch
         {
 // #if DEBUG
 //             // 调试日志：验证 Tag 构造函数被调用
-//             System.Diagnostics.Debug.WriteLine("Tag 构造函数被调用");
+//             Log.Debug("Tag 构造函数被调用");
 // #endif
             name = string.Empty;
         }
@@ -74,7 +74,7 @@ namespace LinkSearch
         {
 // #if DEBUG
 //             // 调试日志：验证 Collection 构造函数被调用
-//             System.Diagnostics.Debug.WriteLine("Collection 构造函数被调用");
+//             Log.Debug("Collection 构造函数被调用");
 // #endif
             name = string.Empty;
         }
@@ -140,24 +140,32 @@ namespace LinkSearch
             {
                 if (Uri.TryCreate(_url, UriKind.Absolute, out var uri))
                 {
-                    // 优先使用Windows.System.Launcher.LaunchUriAsync
-                    bool success = Windows.System.Launcher.LaunchUriAsync(uri).GetAwaiter().GetResult();
-                    if (!success)
+                    // Fire-and-forget 启动，不阻塞调用线程，避免 UI 卡顿或死锁
+                    _ = Windows.System.Launcher.LaunchUriAsync(uri).AsTask().ContinueWith(t =>
                     {
-                        System.Diagnostics.Debug.WriteLine($"无法打开链接: {_url}");
-                        return CommandResult.KeepOpen();
-                    }
+                        try
+                        {
+                            if (!t.Result)
+                            {
+                                Log.Debug($"无法打开链接: {_url}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Debug($"打开链接时发生异常: {ex.Message}");
+                        }
+                    }, TaskScheduler.Default);
                 }
                 else
                 {
-                    System.Diagnostics.Debug.WriteLine($"无效的URL: {_url}");
+                    Log.Debug($"无效的URL: {_url}");
                     return CommandResult.KeepOpen();
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"打开链接时发生异常: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"URL: {_url}");
+                Log.Debug($"打开链接时发生异常: {ex.Message}");
+                Log.Debug($"URL: {_url}");
             }
             return CommandResult.Dismiss();
         }
@@ -178,8 +186,10 @@ namespace LinkSearch
         private string _lastErrorMessage = string.Empty;
         private DateTime _lastErrorTime = DateTime.MinValue;
         private readonly System.Threading.SemaphoreSlim _searchSemaphore = new System.Threading.SemaphoreSlim(1, 1);
+// 使用 HttpClientProvider.Shared（由 LinkSearch.Helpers.HttpClientProvider 提供）
+// (已在 Helpers/HttpClientProvider.cs 中定义，避免在此文件重复声明)
         
-        public LinkSearchPage() : this(new SettingsManager(), new RerankService(new SettingsManager()), new RerankConnectionTestService(new SettingsManager()))
+        public LinkSearchPage() : this(new SettingsManager())
         {
         }
         
@@ -222,7 +232,7 @@ namespace LinkSearch
         private void OnSettingsChanged(object? sender, Microsoft.CommandPalette.Extensions.Toolkit.Settings e)
         {
 #if DEBUG
-            System.Diagnostics.Debug.WriteLine("设置发生变更，重新加载当前搜索结果");
+            Log.Debug("设置发生变更，重新加载当前搜索结果");
 #endif
             
             // 如果当前有搜索查询，则重新加载结果
@@ -256,12 +266,12 @@ namespace LinkSearch
         public async Task<string> TestRerankConnectionAsync()
         {
 #if DEBUG
-            System.Diagnostics.Debug.WriteLine("开始测试Rerank连接");
+            Log.Debug("开始测试Rerank连接");
 #endif
             
             try
             {
-                var testResult = await _rerankConnectionTestService.TestConnectionAsync();
+                var testResult = await _rerankConnectionTestService.TestConnectionAsync(System.Threading.CancellationToken.None).ConfigureAwait(false);
                 
                 if (testResult.IsSuccess)
                 {
@@ -275,7 +285,7 @@ namespace LinkSearch
             catch (Exception ex)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"测试Rerank连接时发生异常: {ex.Message}");
+                Log.Debug($"测试Rerank连接时发生异常: {ex.Message}");
 #endif
                 return $"测试连接时发生异常: {ex.Message}";
             }
@@ -286,55 +296,26 @@ namespace LinkSearch
             // 立即更新当前查询和版本号
             _currentQuery = newSearch;
             Interlocked.Increment(ref _currentQueryVersion);
-            
-            // 使用 Task.Run 来捕获和处理异常
-            Task.Run(async () =>
+        
+            // 直接以 fire-and-forget 的方式调用异步方法，避免额外将工作项排到线程池导致短时大量 TP worker 创建
+            if (string.IsNullOrWhiteSpace(newSearch))
             {
-                // 检查查询是否有效，避免不必要的信号量等待
-                if (string.IsNullOrWhiteSpace(newSearch))
-                {
-                    // 对于空查询，直接更新UI而不使用信号量
-                    await UpdateItemsAsync(newSearch);
-                    return;
-                }
-                
-                // 直接执行延迟搜索，不在这里获取信号量
-                // 信号量获取将移到延迟结束后、实际搜索前
-                try
-                {
-                    // 执行延迟搜索，传递当前查询版本号
-                    await DebouncedUpdateItemsAsync(newSearch, _currentQueryVersion);
-                }
-                catch (System.Threading.Tasks.TaskCanceledException)
-                {
-#if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"搜索任务被取消: {newSearch}");
-#endif
-                    // 任务被取消，这是正常情况，不需要处理
-                }
-                catch (ObjectDisposedException)
-                {
-#if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"对象已释放异常: {newSearch}");
-#endif
-                    // 对象已释放，忽略异常
-                }
-                catch (Exception)
-                {
-#if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"UpdateSearchText 中发生未处理的异常");
-#endif
-                }
-            });
+                // 对于空查询，直接更新UI而不使用信号量（保留原先行为）
+                _ = UpdateItemsAsync(newSearch, System.Threading.CancellationToken.None);
+                return;
+            }
+        
+            // 直接调用 DebouncedUpdateItemsAsync（异步方法会在必要时释放线程）
+            _ = DebouncedUpdateItemsAsync(newSearch, _currentQueryVersion);
         }
         
-        private async System.Threading.Tasks.Task UpdateItemsAsync(string query)
+        private async System.Threading.Tasks.Task UpdateItemsAsync(string query, System.Threading.CancellationToken cancellationToken = default)
         {
             try
             {
                 // 清除之前的错误信息
                 _lastErrorMessage = string.Empty;
-                _allItems = await GetItemsAsync(query);
+                _allItems = await GetItemsAsync(query, cancellationToken).ConfigureAwait(false);
                 RaiseItemsChanged(0);
             }
             catch (Exception ex)
@@ -344,9 +325,9 @@ namespace LinkSearch
                 _lastErrorTime = DateTime.Now;
                 
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"UpdateItemsAsync 中发生异常: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"异常类型: {ex.GetType().Name}");
-                System.Diagnostics.Debug.WriteLine($"堆栈跟踪: {ex.StackTrace}");
+                Log.Debug($"UpdateItemsAsync 中发生异常: {ex.Message}");
+                Log.Debug($"异常类型: {ex.GetType().Name}");
+                Log.Debug($"堆栈跟踪: {ex.StackTrace}");
 #endif
                 
                 // 显示错误信息
@@ -375,7 +356,7 @@ namespace LinkSearch
             if (queryVersion != _currentQueryVersion)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"查询预验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
+                Log.Debug($"查询预验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
 #endif
                 return; // 查询已过期，取消搜索
             }
@@ -409,7 +390,7 @@ namespace LinkSearch
             try
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"开始延迟搜索，查询: {query}, 版本: {queryVersion}");
+                Log.Debug($"开始延迟搜索，查询: {query}, 版本: {queryVersion}");
 #endif
                 
                 // 在开始延迟前获取延迟时间，避免在延迟过程中访问属性导致异常
@@ -418,14 +399,14 @@ namespace LinkSearch
                 {
                     delayMs = SearchDelayMilliseconds;
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"获取到延迟时间: {delayMs}ms");
+                    Log.Debug($"获取到延迟时间: {delayMs}ms");
 #endif
                 }
                 catch (Exception)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"获取延迟时间时发生异常");
-                    System.Diagnostics.Debug.WriteLine($"使用默认延迟时间: 600ms");
+                    Log.Debug($"获取延迟时间时发生异常");
+                    Log.Debug($"使用默认延迟时间: 600ms");
 #endif
                     delayMs = 600; // 使用默认值，从500ms增加到600ms
                 }
@@ -434,7 +415,7 @@ namespace LinkSearch
                 if (queryVersion != _currentQueryVersion)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"获取延迟时间后查询验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
+                    Log.Debug($"获取延迟时间后查询验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
 #endif
                     return; // 查询已过期，取消搜索
                 }
@@ -452,19 +433,19 @@ namespace LinkSearch
                 catch (System.Threading.Tasks.TaskCanceledException)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"延迟期间任务被取消，查询: {query}, 版本: {queryVersion}");
+                    Log.Debug($"延迟期间任务被取消，查询: {query}, 版本: {queryVersion}");
 #endif
                     return; // 延迟期间被取消，直接返回
                 }
                 
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"延迟结束，检查查询有效性");
+                Log.Debug($"延迟结束，检查查询有效性");
 #endif
                 // 延迟后再次验证查询版本是否仍然有效（查询有效性验证）
                 if (queryVersion != _currentQueryVersion)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"查询已过期，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
+                    Log.Debug($"查询已过期，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
 #endif
                     return; // 查询已过期，取消搜索
                 }
@@ -475,14 +456,14 @@ namespace LinkSearch
                 {
                     semaphoreTimeout = GetSemaphoreTimeout();
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"获取到信号量超时时间: {semaphoreTimeout}ms");
+                    Log.Debug($"获取到信号量超时时间: {semaphoreTimeout}ms");
 #endif
                 }
                 catch (Exception)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"获取信号量超时时间时发生异常");
-                    System.Diagnostics.Debug.WriteLine($"使用默认信号量超时时间: 1800ms");
+                    Log.Debug($"获取信号量超时时间时发生异常");
+                    Log.Debug($"使用默认信号量超时时间: 1800ms");
 #endif
                     semaphoreTimeout = 1800; // 使用默认值，从1500ms增加到1800ms
                 }
@@ -492,7 +473,7 @@ namespace LinkSearch
                 if (!semaphoreAcquired)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"信号量获取超时，跳过搜索: {query}");
+                    Log.Debug($"信号量获取超时，跳过搜索: {query}");
 #endif
                     return;
                 }
@@ -502,7 +483,7 @@ namespace LinkSearch
                 if (System.Threading.Interlocked.CompareExchange(ref _activeSearchVersion, queryVersion, expectedActiveVersion) != expectedActiveVersion)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"已有其他搜索任务正在执行，当前活动版本: {_activeSearchVersion}, 请求版本: {queryVersion}");
+                    Log.Debug($"已有其他搜索任务正在执行，当前活动版本: {_activeSearchVersion}, 请求版本: {queryVersion}");
 #endif
                     return;
                 }
@@ -511,9 +492,9 @@ namespace LinkSearch
                 if (localCancellationTokenSource != _searchCancellationTokenSource || localCancellationTokenSource.Token.IsCancellationRequested)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"CancellationTokenSource已失效或任务被取消，查询: {query}, 版本: {queryVersion}");
-                    System.Diagnostics.Debug.WriteLine($"本地CTS与全局CTS相同: {localCancellationTokenSource == _searchCancellationTokenSource}");
-                    System.Diagnostics.Debug.WriteLine($"本地CTS取消状态: {localCancellationTokenSource.Token.IsCancellationRequested}");
+                    Log.Debug($"CancellationTokenSource已失效或任务被取消，查询: {query}, 版本: {queryVersion}");
+                    Log.Debug($"本地CTS与全局CTS相同: {localCancellationTokenSource == _searchCancellationTokenSource}");
+                    Log.Debug($"本地CTS取消状态: {localCancellationTokenSource.Token.IsCancellationRequested}");
 #endif
                     // 重置活动搜索版本
                     System.Threading.Interlocked.Exchange(ref _activeSearchVersion, 0);
@@ -524,7 +505,7 @@ namespace LinkSearch
                 if (queryVersion != _currentQueryVersion)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"获取信号量后查询验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
+                    Log.Debug($"获取信号量后查询验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
 #endif
                     // 重置活动搜索版本
                     System.Threading.Interlocked.Exchange(ref _activeSearchVersion, 0);
@@ -535,34 +516,34 @@ namespace LinkSearch
                 if (!localCancellationTokenSource.Token.IsCancellationRequested)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"执行搜索，查询: {_currentQuery}, 版本: {queryVersion}");
+                    Log.Debug($"执行搜索，查询: {_currentQuery}, 版本: {queryVersion}");
 #endif
                     // 使用_currentQuery而不是参数query，确保使用最新的查询字符串
-                    await UpdateItemsAsync(_currentQuery);
+                    await UpdateItemsAsync(_currentQuery, localCancellationTokenSource.Token).ConfigureAwait(false);
                 }
             }
             catch (System.Threading.Tasks.TaskCanceledException)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"搜索任务被取消，查询: {query}, 版本: {queryVersion}");
-                System.Diagnostics.Debug.WriteLine($"CancellationToken状态: {localCancellationTokenSource?.Token.IsCancellationRequested ?? true}");
-                System.Diagnostics.Debug.WriteLine($"查询版本是否匹配: {queryVersion == _currentQueryVersion}");
+                Log.Debug($"搜索任务被取消，查询: {query}, 版本: {queryVersion}");
+                Log.Debug($"CancellationToken状态: {localCancellationTokenSource?.Token.IsCancellationRequested ?? true}");
+                Log.Debug($"查询版本是否匹配: {queryVersion == _currentQueryVersion}");
 #endif
                 // 任务被取消，这是正常情况，不需要处理
             }
             catch (ObjectDisposedException)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"对象已释放异常，查询: {query}, 版本: {queryVersion}");
+                Log.Debug($"对象已释放异常，查询: {query}, 版本: {queryVersion}");
 #endif
                 // 对象已释放，忽略异常
             }
             catch (Exception)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"搜索任务发生异常，查询: {query}, 版本: {queryVersion}");
-                System.Diagnostics.Debug.WriteLine($"CancellationToken状态: {localCancellationTokenSource?.Token.IsCancellationRequested ?? true}");
-                System.Diagnostics.Debug.WriteLine($"查询版本是否匹配: {queryVersion == _currentQueryVersion}");
+                Log.Debug($"搜索任务发生异常，查询: {query}, 版本: {queryVersion}");
+                Log.Debug($"CancellationToken状态: {localCancellationTokenSource?.Token.IsCancellationRequested ?? true}");
+                Log.Debug($"查询版本是否匹配: {queryVersion == _currentQueryVersion}");
 #endif
                 // 记录其他异常
             }
@@ -601,7 +582,7 @@ namespace LinkSearch
                 catch (Exception)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"清理CancellationTokenSource时发生异常");
+                    Log.Debug($"清理CancellationTokenSource时发生异常");
 #endif
                     // 记录清理异常，但不影响主流程
                 }
@@ -613,7 +594,7 @@ namespace LinkSearch
                     {
                         _searchSemaphore.Release();
 #if DEBUG
-                        System.Diagnostics.Debug.WriteLine($"信号量已释放，查询: {query}, 版本: {queryVersion}");
+                        Log.Debug($"信号量已释放，查询: {query}, 版本: {queryVersion}");
 #endif
                     }
                     catch (ObjectDisposedException)
@@ -627,7 +608,7 @@ namespace LinkSearch
                 }
                 
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"搜索任务清理完成，查询: {query}, 版本: {queryVersion}");
+                Log.Debug($"搜索任务清理完成，查询: {query}, 版本: {queryVersion}");
 #endif
             }
         }
@@ -637,7 +618,7 @@ namespace LinkSearch
             return _settingsManager.LinkwardenBaseUrl;
         }
 
-        private async System.Threading.Tasks.Task<List<IListItem>> GetItemsAsync(string query)
+        private async System.Threading.Tasks.Task<List<IListItem>> GetItemsAsync(string query, System.Threading.CancellationToken cancellationToken = default)
         {
             // 如果查询为空，返回提示信息
             if (string.IsNullOrWhiteSpace(query))
@@ -653,7 +634,7 @@ namespace LinkSearch
             
             // 调试日志：验证Token获取
 #if DEBUG
-            System.Diagnostics.Debug.WriteLine($"Token获取结果: {(string.IsNullOrEmpty(token) ? "未获取到Token" : "已获取到Token")}");
+            Log.Debug($"Token获取结果: {(string.IsNullOrEmpty(token) ? "未获取到Token" : "已获取到Token")}");
 #endif
 
             // 统一判断 token 是否为空，如果为空则返回错误提示
@@ -681,23 +662,19 @@ namespace LinkSearch
             // 调用 API
             try
             {
-                using var client = new System.Net.Http.HttpClient();
-                // 设置超时时间
-                client.Timeout = TimeSpan.FromSeconds(30);
-                client.DefaultRequestHeaders.Add("Accept", "application/json");
-                client.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                // 使用全局共享 HttpClient，通过为每次请求创建 HttpRequestMessage 来避免并发修改 DefaultRequestHeaders
                 string baseUrl = GetLinkwardenBaseUrl();
                 
                 // 调试日志：记录Base URL
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"使用的Base URL: {baseUrl}");
+                Log.Debug($"使用的Base URL: {baseUrl}");
 #endif
                 
                 // 验证Base URL是否有效
                 if (string.IsNullOrWhiteSpace(baseUrl))
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine("Base URL 为空或无效");
+                    Log.Debug("Base URL 为空或无效");
 #endif
                     return new List<IListItem>
                     {
@@ -710,22 +687,59 @@ namespace LinkSearch
                 
                 // 调试日志：记录完整请求URL
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"完整请求URL: {url}");
+                Log.Debug($"完整请求URL: {url}");
 #endif
-                
-                var resp = await client.GetAsync(url);
+
+                var requestMessage = new HttpRequestMessage(HttpMethod.Get, url);
+                requestMessage.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                requestMessage.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+ 
+                using var resp = await HttpClientProvider.Shared.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
                 
                 // 调试日志：记录响应状态码
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"API响应状态码: {resp.StatusCode}");
+                Log.Debug($"API响应状态码: {resp.StatusCode}");
 #endif
                 
                 if (!resp.IsSuccessStatusCode)
                 {
-                    // 调试日志：记录失败原因
-                    var errorContent = await resp.Content.ReadAsStringAsync();
+                    // 调试日志：记录失败原因（流式读取并尝试解析为 JSON，支持取消并减少中间 string 分配）
+                    await using var errorStream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                    // 将响应流复制到内存流以便在解析失败时回退读取完整文本
+                    using var ms = new MemoryStream();
+                    await errorStream.CopyToAsync(ms, cancellationToken).ConfigureAwait(false);
+                    ms.Position = 0;
+                    string errorContent;
+                    try
+                    {
+                        using var errorDoc = await System.Text.Json.JsonDocument.ParseAsync(ms, cancellationToken: cancellationToken).ConfigureAwait(false);
+                        var rootErr = errorDoc.RootElement;
+                        if (rootErr.ValueKind == JsonValueKind.Object &&
+                            rootErr.TryGetProperty("message", out var msgEl) &&
+                            msgEl.ValueKind == JsonValueKind.String)
+                        {
+                            errorContent = msgEl.GetString() ?? rootErr.GetRawText();
+                        }
+                        else if (rootErr.ValueKind == JsonValueKind.Object &&
+                                 rootErr.TryGetProperty("error", out var errEl) &&
+                                 errEl.ValueKind == JsonValueKind.String)
+                        {
+                            errorContent = errEl.GetString() ?? rootErr.GetRawText();
+                        }
+                        else
+                        {
+                            errorContent = rootErr.GetRawText();
+                        }
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                        // 解析失败则退回读取完整文本（已缓冲于内存流）
+                        ms.Position = 0;
+                        using var sr = new StreamReader(ms);
+                        errorContent = await sr.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+                    }
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"API请求失败，状态码: {resp.StatusCode}, 响应内容: {errorContent}");
+                    Log.Debug($"API请求失败，状态码: {resp.StatusCode}, 响应内容: {errorContent}");
 #endif
                     
                     return new List<IListItem>
@@ -733,15 +747,11 @@ namespace LinkSearch
                         new ListItem(new NoOpCommand()) { Title = $"API 请求失败: {resp.StatusCode}", Icon = Icons.LinkSearchExtIcon }
                     };
                 }
-                
-                var json = await resp.Content.ReadAsStringAsync();
-                
-                // 调试提示：显示 API 响应内容（仅在开发环境）
-// #if DEBUG
-//                 System.Diagnostics.Debug.WriteLine($"API 响应: {json}");
-// #endif
-                
-                var root = System.Text.Json.JsonDocument.Parse(json).RootElement;
+ 
+                // 使用流式读取并解析 JSON，支持取消，避免分配中间 string
+                await using var responseStream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                using var doc = await System.Text.Json.JsonDocument.ParseAsync(responseStream, default, cancellationToken).ConfigureAwait(false);
+                var root = doc.RootElement;
                 
                 // 安全检查：验证"data"节点存在性
                 if (!root.TryGetProperty("data", out var dataElement))
@@ -757,7 +767,7 @@ namespace LinkSearch
                 
                 // 调试日志：记录 data 元素的类型
 // #if DEBUG
-//                 System.Diagnostics.Debug.WriteLine($"API 响应中 data 元素的类型: {dataElement.ValueKind}");
+//                 Log.Debug($"API 响应中 data 元素的类型: {dataElement.ValueKind}");
 // #endif
                 
                 // 如果 data 是一个对象且包含 links 属性，则使用 links 属性
@@ -766,7 +776,7 @@ namespace LinkSearch
                 {
                     // 调试日志：确认使用对象格式的 data.links
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine("使用对象格式的 data.links");
+                    Log.Debug("使用对象格式的 data.links");
 #endif
                 }
                 // 如果 data 本身就是一个数组，则直接使用 data
@@ -775,14 +785,14 @@ namespace LinkSearch
                     linksElement = dataElement;
                     // 调试日志：确认使用数组格式的 data
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine("使用数组格式的 data");
+                    Log.Debug("使用数组格式的 data");
 #endif
                 }
                 else
                 {
                     // 调试日志：记录不支持的 data 格式
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"不支持的 data 格式: {dataElement.ValueKind}");
+                    Log.Debug($"不支持的 data 格式: {dataElement.ValueKind}");
 #endif
                     return new List<IListItem>
                     {
@@ -817,17 +827,26 @@ namespace LinkSearch
                         // 内联方法：拼接标签字符串（避免额外分配）
                         static string GetTagsString(JsonElement tagArr)
                         {
-                            var tagsList = new List<string>();
+                            // 使用 StringBuilder 直接拼接，避免临时 List 和 string.Join 的分配
+                            var sb = new System.Text.StringBuilder(64);
+                            bool first = true;
                             foreach (var tag in tagArr.EnumerateArray())
                             {
                                 if (tag.TryGetProperty("name", out var tn))
                                 {
                                     var tagName = tn.GetString();
                                     if (!string.IsNullOrEmpty(tagName))
-                                        tagsList.Add(tagName);
+                                    {
+                                        if (!first)
+                                        {
+                                            sb.Append(", ");
+                                        }
+                                        sb.Append(tagName);
+                                        first = false;
+                                    }
                                 }
                             }
-                            return string.Join(", ", tagsList);
+                            return sb.ToString();
                         }
                         tagsStr = GetTagsString(t);
                     }
@@ -840,8 +859,18 @@ namespace LinkSearch
                 // 未启用rerank：直接根据rawList渲染UI，避免创建LinkResult/Tag/Collection对象与日志
                 if (!_settingsManager.EnableRerank || rawList.Count == 0)
                 {
+                    // 应用最大结果数量限制
+                    var maxResults = _settingsManager.MaxResults;
+                    var processedCount = 0;
+                    
                     foreach (var r in rawList)
                     {
+                        // 检查是否已达到最大结果数量限制
+                        if (processedCount >= maxResults)
+                        {
+                            break;
+                        }
+                        
                         if (string.IsNullOrWhiteSpace(r.Url))
                             continue;
 
@@ -856,18 +885,19 @@ namespace LinkSearch
                                 Subtitle = detail,
                                 Icon = Icons.LinkSearchExtIcon
                             });
+                            processedCount++;
                         }
                         catch (ArgumentException)
                         {
-                            System.Diagnostics.Debug.WriteLine($"跳过无效URL: {r.Url}");
+                            Log.Debug($"跳过无效URL: {r.Url}");
                         }
                     }
 
-                    System.Diagnostics.Debug.WriteLine($"处理完成，共找到 {items.Count} 个结果");
+                    Log.Debug($"处理完成，共找到 {items.Count} 个结果");
 
                     if (items.Count == 0)
                     {
-                        System.Diagnostics.Debug.WriteLine("添加'未找到相关结果'提示");
+                        Log.Debug("添加'未找到相关结果'提示");
                         items.Add(new ListItem(new NoOpCommand()) { Title = "未找到相关结果", Icon = Icons.LinkSearchExtIcon });
                     }
 
@@ -877,7 +907,7 @@ namespace LinkSearch
                 // 启用rerank：仅此分支把rawList转换为LinkResult并调用RerankService
                 var objectCreationStart = System.Diagnostics.Stopwatch.StartNew();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"开始创建LinkResult对象，数量: {rawList.Count}");
+                Log.Debug($"开始创建LinkResult对象，数量: {rawList.Count}");
 #endif
                 
                 var linkResults = new List<LinkResult>(rawList.Count);
@@ -897,26 +927,36 @@ namespace LinkSearch
                 
                 objectCreationStart.Stop();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"LinkResult对象创建完成，耗时: {objectCreationStart.ElapsedMilliseconds}ms");
+                Log.Debug($"LinkResult对象创建完成，耗时: {objectCreationStart.ElapsedMilliseconds}ms");
 #endif
 
                 try
                 {
                     var rerankStart = System.Diagnostics.Stopwatch.StartNew();
     #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"开始调用RerankService");
+                    Log.Debug($"开始调用RerankService");
     #endif
                     
-                    var rerankedResults = await _rerankService.RerankLinksAsync(query, linkResults);
+                    var rerankedResults = await _rerankService.RerankLinksAsync(query, linkResults, cancellationToken).ConfigureAwait(false);
                     
                     rerankStart.Stop();
-    #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"RerankService调用完成，总耗时: {rerankStart.ElapsedMilliseconds}ms");
-    #endif
-
+#if DEBUG
+                    Log.Debug($"RerankService调用完成，总耗时: {rerankStart.ElapsedMilliseconds}ms");
+#endif
+ 
                     items.Clear();
+                    // 应用最大结果数量限制
+                    var maxResults = _settingsManager.MaxResults;
+                    var processedCount = 0;
+                    
                     foreach (var lr in rerankedResults)
                     {
+                        // 检查是否已达到最大结果数量限制
+                        if (processedCount >= maxResults)
+                        {
+                            break;
+                        }
+                        
                         if (string.IsNullOrWhiteSpace(lr.url))
                             continue;
 
@@ -932,30 +972,41 @@ namespace LinkSearch
                                 Subtitle = detail,
                                 Icon = Icons.LinkSearchExtIcon
                             });
+                            processedCount++;
                         }
                         catch (ArgumentException)
                         {
 #if DEBUG
-                            System.Diagnostics.Debug.WriteLine($"跳过无效URL: {lr.url}");
+                            Log.Debug($"跳过无效URL: {lr.url}");
 #endif
                         }
                     }
 
-    #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"Rerank完成，重排序后的结果数量: {items.Count}");
-    #endif
+#if DEBUG
+                    Log.Debug($"Rerank完成，重排序后的结果数量: {items.Count}");
+#endif
                 }
                 catch (Exception)
                 {
                     // 记录rerank异常，使用原始rawList回退
     #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"Rerank过程中发生异常");
-                    System.Diagnostics.Debug.WriteLine($"使用原始搜索结果");
+                    Log.Debug($"Rerank过程中发生异常");
+                    Log.Debug($"使用原始搜索结果");
     #endif
 
                     items.Clear();
+                    // 应用最大结果数量限制
+                    var maxResults = _settingsManager.MaxResults;
+                    var processedCount = 0;
+                    
                     foreach (var r in rawList)
                     {
+                        // 检查是否已达到最大结果数量限制
+                        if (processedCount >= maxResults)
+                        {
+                            break;
+                        }
+                        
                         if (string.IsNullOrWhiteSpace(r.Url))
                             continue;
 
@@ -970,24 +1021,25 @@ namespace LinkSearch
                                 Subtitle = detail,
                                 Icon = Icons.LinkSearchExtIcon
                             });
+                            processedCount++;
                         }
                         catch (ArgumentException)
                         {
 #if DEBUG
-                            System.Diagnostics.Debug.WriteLine($"跳过无效URL: {r.Url}");
+                            Log.Debug($"跳过无效URL: {r.Url}");
 #endif
                         }
                     }
                 }
 
     #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"处理完成，共找到 {items.Count} 个结果");
+                Log.Debug($"处理完成，共找到 {items.Count} 个结果");
     #endif
 
                 if (items.Count == 0)
                 {
     #if DEBUG
-                    System.Diagnostics.Debug.WriteLine("添加'未找到相关结果'提示");
+                    Log.Debug("添加'未找到相关结果'提示");
     #endif
                     items.Add(new ListItem(new NoOpCommand()) { Title = "未找到相关结果", Icon = Icons.LinkSearchExtIcon });
                 }
@@ -998,7 +1050,7 @@ namespace LinkSearch
             {
                 // 调试日志：记录HTTP请求异常详细信息
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"HTTP请求异常");
+                Log.Debug($"HTTP请求异常");
 #endif
                 
                 // 根据异常类型提供更具体的错误提示
@@ -1014,7 +1066,7 @@ namespace LinkSearch
             {
                 // 调试日志：记录任务取消异常（通常是超时）
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"任务取消异常（超时）");
+                Log.Debug($"任务取消异常（超时）");
 #endif
                 
                 return new List<IListItem>
@@ -1027,7 +1079,7 @@ namespace LinkSearch
             {
                 // 调试日志：记录URL格式异常
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"URL格式异常");
+                Log.Debug($"URL格式异常");
 #endif
                 
                 return new List<IListItem>
@@ -1040,10 +1092,10 @@ namespace LinkSearch
             {
                 // 调试日志：记录其他异常
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"未预期的异常: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"异常类型: {ex.GetType().Name}");
-                System.Diagnostics.Debug.WriteLine($"内部异常: {ex.InnerException?.Message}");
-                System.Diagnostics.Debug.WriteLine($"堆栈跟踪: {ex.StackTrace}");
+                Log.Debug($"未预期的异常: {ex.Message}");
+                Log.Debug($"异常类型: {ex.GetType().Name}");
+                Log.Debug($"内部异常: {ex.InnerException?.Message}");
+                Log.Debug($"堆栈跟踪: {ex.StackTrace}");
 #endif
                 
                 return new List<IListItem>
@@ -1065,7 +1117,23 @@ namespace LinkSearch
                 return Array.Empty<Tag>();
             }
             
-            var tagsList = new List<Tag>();
+            // 先统计有效标签数量，避免使用 List<T> 的中间分配
+            int count = 0;
+            foreach (var tag in tagElement.EnumerateArray())
+            {
+                if (tag.TryGetProperty("name", out var tn) && !string.IsNullOrEmpty(tn.GetString()))
+                {
+                    count++;
+                }
+            }
+
+            if (count == 0)
+            {
+                return Array.Empty<Tag>();
+            }
+
+            var result = new Tag[count];
+            int idx = 0;
             foreach (var tag in tagElement.EnumerateArray())
             {
                 if (tag.TryGetProperty("name", out var tn))
@@ -1073,12 +1141,18 @@ namespace LinkSearch
                     var tagName = tn.GetString();
                     if (!string.IsNullOrEmpty(tagName))
                     {
-                        tagsList.Add(new Tag { name = tagName });
+                        result[idx++] = new Tag { name = tagName };
                     }
                 }
             }
-            
-            return tagsList.ToArray();
+
+            // 如果实际数量少于预估，则调整数组大小
+            if (idx != count)
+            {
+                Array.Resize(ref result, idx);
+            }
+
+            return result;
         }
         
         /// <summary>
@@ -1093,8 +1167,22 @@ namespace LinkSearch
                 return string.Empty;
             }
             
-            var tagNames = tags.Where(t => !string.IsNullOrEmpty(t.name)).Select(t => t.name);
-            return string.Join(", ", tagNames);
+            // 使用 StringBuilder 遍历拼接，避免 LINQ 中间集合分配
+            var sb = new System.Text.StringBuilder(64);
+            bool first = true;
+            for (int i = 0; i < tags.Length; i++)
+            {
+                var name = tags[i]?.name;
+                if (string.IsNullOrEmpty(name))
+                    continue;
+                if (!first)
+                {
+                    sb.Append(", ");
+                }
+                sb.Append(name);
+                first = false;
+            }
+            return sb.ToString();
         }
         
         public override IListItem[] GetItems()

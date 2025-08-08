@@ -22,29 +22,27 @@ namespace LinkSearch.Services
         
         private readonly SettingsManager _settingsManager;
         private readonly HttpClient _httpClient;
-        private readonly JsonSerializerOptions _jsonSerializerOptions;
-
+        private static readonly JsonSerializerOptions s_jsonSerializerOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = false
+        };
+ 
         /// <summary>
         /// 构造函数
         /// </summary>
         /// <param name="settingsManager">设置管理器</param>
         public RerankConnectionTestService(SettingsManager settingsManager)
         {
-// #if DEBUG
-//             // 调试日志：验证构造函数被调用
-//             System.Diagnostics.Debug.WriteLine("RerankConnectionTestService 构造函数被调用");
-// #endif
-            
+ // #if DEBUG
+ //             // 调试日志：验证构造函数被调用
+ //             Log.Debug("RerankConnectionTestService 构造函数被调用");
+ // #endif
+             
             _settingsManager = settingsManager ?? throw new ArgumentNullException(nameof(settingsManager));
-            _httpClient = new HttpClient();
-            _httpClient.Timeout = TimeSpan.FromSeconds(30);
-            
-            // 配置JSON序列化选项
-            _jsonSerializerOptions = new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                WriteIndented = false
-            };
+            // 使用共享 HttpClient，避免频繁创建导致的端口耗尽问题
+            _httpClient = HttpClientProvider.Shared;
+            // 使用静态 JsonSerializerOptions，避免每次构造
         }
 
         /// <summary>
@@ -53,10 +51,10 @@ namespace LinkSearch.Services
         /// <returns>连接测试结果</returns>
         [RequiresUnreferencedCode("JSON serialization and deserialization may require types that cannot be statically analyzed.")]
         [RequiresDynamicCode("JSON serialization and deserialization may require code that cannot be statically generated.")]
-        public async Task<RerankConnectionTestResult> TestConnectionAsync()
+        public async Task<RerankConnectionTestResult> TestConnectionAsync(System.Threading.CancellationToken cancellationToken = default)
         {
 #if DEBUG
-            System.Diagnostics.Debug.WriteLine("开始测试rerank API连接");
+            Log.Debug("开始测试rerank API连接");
 #endif
             
             var startTime = DateTimeOffset.UtcNow;
@@ -106,33 +104,33 @@ namespace LinkSearch.Services
                     returnScores: true
                 );
 
-                // 序列化请求
-                var jsonContent = JsonSerializer.Serialize(testRequest, _jsonSerializerOptions);
-                var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-                
-                // 设置请求头
-                _httpClient.DefaultRequestHeaders.Clear();
-                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
-                
-                // 发送请求
-                var response = await _httpClient.PostAsync(apiUrl, content);
+                // 序列化请求为 UTF-8 字节，避免中间 string 带来的大对象分配
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(testRequest, s_jsonSerializerOptions);
+                using var content = new ByteArrayContent(bytes);
+                content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+ 
+                // 为每次请求创建 HttpRequestMessage，避免修改共享 HttpClient.DefaultRequestHeaders 导致并发竞态
+                var requestMessage = new HttpRequestMessage(HttpMethod.Post, apiUrl)
+                {
+                    Content = content
+                };
+                requestMessage.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                requestMessage.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+ 
+                // 发送请求（流式读取响应头，减少内存占用）
+                using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
                 var responseTimeMs = GetElapsedTimeMs(startTime);
-                
+ 
                 // 调试日志：记录响应状态码
     #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API测试响应状态码: {response.StatusCode}");
+                Log.Debug($"Rerank API测试响应状态码: {response.StatusCode}");
     #endif
-                
-                var responseContent = await response.Content.ReadAsStringAsync();
-                
-                // 调试提示：显示 API 响应内容（仅在开发环境）
-#if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API测试响应: {responseContent}");
-#endif
                 
                 if (!response.IsSuccessStatusCode)
                 {
+                    // 非成功分支读取响应内容以便返回详细信息
+                    var errorContent = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    
                     // 根据状态码确定错误类型
                     string errorType;
                     string errorMessage;
@@ -173,14 +171,15 @@ namespace LinkSearch.Services
                         errorMessage,
                         responseTimeMs,
                         (int)response.StatusCode,
-                        responseContent
+                        errorContent
                     );
                 }
                 
-                // 尝试解析响应
+                // 尝试解析响应（使用流式反序列化，支持取消）
                 try
                 {
-                    var rerankResponse = JsonSerializer.Deserialize<RerankResponse>(responseContent, _jsonSerializerOptions);
+                    await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                    var rerankResponse = await JsonSerializer.DeserializeAsync<RerankResponse>(responseStream, s_jsonSerializerOptions, cancellationToken).ConfigureAwait(false);
                     
                     if (rerankResponse == null)
                     {
@@ -189,40 +188,40 @@ namespace LinkSearch.Services
                             "API响应为空",
                             responseTimeMs,
                             (int)response.StatusCode,
-                            responseContent
+                            string.Empty
                         );
                     }
                     
-#if DEBUG
-                    System.Diagnostics.Debug.WriteLine("Rerank API连接测试成功");
-#endif
+    #if DEBUG
+                    Log.Debug("Rerank API连接测试成功");
+    #endif
                     return RerankConnectionTestResult.CreateSuccess(
                         responseTimeMs,
                         (int)response.StatusCode,
-                        responseContent
+                        string.Empty
                     );
                 }
                 catch (JsonException jsonEx)
                 {
-#if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"Rerank API响应JSON解析异常: {jsonEx.Message}");
-#endif
+    #if DEBUG
+                    Log.Debug($"Rerank API响应JSON解析异常: {jsonEx.Message}");
+    #endif
                     
                     return RerankConnectionTestResult.CreateFailure(
                         "ResponseError",
                         $"API响应格式错误: {jsonEx.Message}",
                         responseTimeMs,
                         (int)response.StatusCode,
-                        responseContent
+                        string.Empty
                     );
                 }
             }
             catch (HttpRequestException httpEx)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API HTTP请求异常: {httpEx.Message}");
-                System.Diagnostics.Debug.WriteLine($"异常类型: {httpEx.GetType().Name}");
-                System.Diagnostics.Debug.WriteLine($"内部异常: {httpEx.InnerException?.Message}");
+                Log.Debug($"Rerank API HTTP请求异常: {httpEx.Message}");
+                Log.Debug($"异常类型: {httpEx.GetType().Name}");
+                Log.Debug($"内部异常: {httpEx.InnerException?.Message}");
 #endif
                 
                 // 根据异常类型确定错误类型
@@ -264,7 +263,7 @@ namespace LinkSearch.Services
             catch (TaskCanceledException)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API任务取消异常（超时）");
+                Log.Debug($"Rerank API任务取消异常（超时）");
 #endif
                 
                 return RerankConnectionTestResult.CreateFailure(
@@ -276,7 +275,7 @@ namespace LinkSearch.Services
             catch (UriFormatException uriEx)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API URL格式异常: {uriEx.Message}");
+                Log.Debug($"Rerank API URL格式异常: {uriEx.Message}");
 #endif
                 
                 return RerankConnectionTestResult.CreateFailure(
@@ -288,10 +287,10 @@ namespace LinkSearch.Services
             catch (Exception ex)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API未预期的异常: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"异常类型: {ex.GetType().Name}");
-                System.Diagnostics.Debug.WriteLine($"内部异常: {ex.InnerException?.Message}");
-                System.Diagnostics.Debug.WriteLine($"堆栈跟踪: {ex.StackTrace}");
+                Log.Debug($"Rerank API未预期的异常: {ex.Message}");
+                Log.Debug($"异常类型: {ex.GetType().Name}");
+                Log.Debug($"内部异常: {ex.InnerException?.Message}");
+                Log.Debug($"堆栈跟踪: {ex.StackTrace}");
 #endif
                 
                 return RerankConnectionTestResult.CreateFailure(
@@ -317,7 +316,8 @@ namespace LinkSearch.Services
         /// </summary>
         public void Dispose()
         {
-            _httpClient?.Dispose();
+            // 使用共享 HttpClient，不在此处 Dispose
+            // 保留方法以便将来清理其他资源
         }
     }
 }

@@ -24,29 +24,27 @@ namespace LinkSearch.Services
     {
         private readonly SettingsManager _settingsManager;
         private readonly HttpClient _httpClient;
-        private readonly JsonSerializerOptions _jsonSerializerOptions;
-
+        private static readonly JsonSerializerOptions s_jsonSerializerOptions = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = false
+        };
+        
         /// <summary>
         /// 构造函数
         /// </summary>
         /// <param name="settingsManager">设置管理器</param>
         public RerankService(SettingsManager settingsManager)
         {
-// #if DEBUG
-//             // 调试日志：验证构造函数被调用
-//             System.Diagnostics.Debug.WriteLine("RerankService 构造函数被调用");
-// #endif
-            
+ // #if DEBUG
+ //             // 调试日志：验证构造函数被调用
+ //             Log.Debug("RerankService 构造函数被调用");
+ // #endif
+             
             _settingsManager = settingsManager ?? throw new ArgumentNullException(nameof(settingsManager));
-            _httpClient = new HttpClient();
-            _httpClient.Timeout = TimeSpan.FromSeconds(30);
-            
-            // 配置JSON序列化选项
-            _jsonSerializerOptions = new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                WriteIndented = false
-            };
+            // 使用 Helpers 中的共享 HttpClient 实例
+            _httpClient = HttpClientProvider.Shared;
+            // 使用静态 JsonSerializerOptions，避免每次构造
         }
 
         /// <summary>
@@ -55,18 +53,18 @@ namespace LinkSearch.Services
         /// <param name="query">查询文本</param>
         /// <param name="linkResults">链接结果列表</param>
         /// <returns>重新排序后的链接结果列表</returns>
-        public async Task<List<LinkResult>> RerankLinksAsync(string query, List<LinkResult> linkResults)
+        public async Task<List<LinkResult>> RerankLinksAsync(string query, List<LinkResult> linkResults, System.Threading.CancellationToken cancellationToken = default)
         {
             var startTime = System.Diagnostics.Stopwatch.StartNew();
 #if DEBUG
-            System.Diagnostics.Debug.WriteLine($"开始对链接进行rerank，查询: {query}, 链接数量: {linkResults.Count}");
+            Log.Debug($"开始对链接进行rerank，查询: {query}, 链接数量: {linkResults.Count}");
 #endif
             
             // 检查是否启用rerank功能
             if (!_settingsManager.EnableRerank)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine("Rerank功能未启用，返回原始结果");
+                Log.Debug("Rerank功能未启用，返回原始结果");
 #endif
                 return linkResults;
             }
@@ -76,7 +74,7 @@ namespace LinkSearch.Services
             if (string.IsNullOrWhiteSpace(apiKey))
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine("Rerank API Key未设置，返回原始结果");
+                Log.Debug("Rerank API Key未设置，返回原始结果");
 #endif
                 return linkResults;
             }
@@ -85,7 +83,7 @@ namespace LinkSearch.Services
             if (linkResults == null || linkResults.Count == 0)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine("链接结果为空，返回原始结果");
+                Log.Debug("链接结果为空，返回原始结果");
 #endif
                 return linkResults ?? new List<LinkResult>();
             }
@@ -95,39 +93,61 @@ namespace LinkSearch.Services
                 // 将链接结果转换为文档格式
                 var documentBuildStart = System.Diagnostics.Stopwatch.StartNew();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"开始构建文档，链接数量: {linkResults.Count}");
+                Log.Debug($"开始构建文档，链接数量: {linkResults.Count}");
 #endif
                 
-                var documents = linkResults.Select(link =>
+                // 减少中间分配：使用可复用的 StringBuilder，避免 LINQ/临时集合及多次构造 StringBuilder
+                var documents = new string[linkResults.Count];
+                var sb = new StringBuilder(256);
+                for (int i = 0; i < linkResults.Count; i++)
                 {
-                    // 构建文档内容，包含名称、描述和URL
-                    var documentBuilder = new StringBuilder();
-                    documentBuilder.AppendLine(string.Format(CultureInfo.CurrentCulture, "名称: {0}", link.name));
-                    documentBuilder.AppendLine(string.Format(CultureInfo.CurrentCulture, "描述: {0}", link.description));
-                    documentBuilder.AppendLine(string.Format(CultureInfo.CurrentCulture, "URL: {0}", link.url));
-                    
-                    // 添加标签信息
+                    var link = linkResults[i];
+                    sb.Clear();
+
+                    sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "名称: {0}", link.name));
+                    sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "描述: {0}", link.description));
+                    sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "URL: {0}", link.url));
+
+                    // 直接拼接标签，避免先构造集合再 Join 导致的分配
                     if (link.tags != null && link.tags.Length > 0)
                     {
-                        var tagNames = link.tags.Where(t => !string.IsNullOrEmpty(t.name)).Select(t => t.name);
-                        if (tagNames.Any())
+                        bool hasTag = false;
+                        for (int ti = 0; ti < link.tags.Length; ti++)
                         {
-                            documentBuilder.AppendLine(string.Format(CultureInfo.CurrentCulture, "标签: {0}", string.Join(", ", tagNames)));
+                            var tagName = link.tags[ti]?.name;
+                            if (string.IsNullOrEmpty(tagName))
+                                continue;
+
+                            if (!hasTag)
+                            {
+                                sb.Append("标签: ");
+                                sb.Append(tagName);
+                                hasTag = true;
+                            }
+                            else
+                            {
+                                sb.Append(", ");
+                                sb.Append(tagName);
+                            }
+                        }
+
+                        if (hasTag)
+                        {
+                            sb.AppendLine();
                         }
                     }
-                    
-                    // 添加集合信息
+
                     if (link.collection != null && !string.IsNullOrEmpty(link.collection.name))
                     {
-                        documentBuilder.AppendLine(string.Format(CultureInfo.CurrentCulture, "集合: {0}", link.collection.name));
+                        sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "集合: {0}", link.collection.name));
                     }
-                    
-                    return documentBuilder.ToString();
-                }).ToArray();
+
+                    documents[i] = sb.ToString();
+                }
                 
                 documentBuildStart.Stop();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"文档构建完成，耗时: {documentBuildStart.ElapsedMilliseconds}ms");
+                Log.Debug($"文档构建完成，耗时: {documentBuildStart.ElapsedMilliseconds}ms");
 #endif
 
                 // 创建rerank请求
@@ -141,12 +161,12 @@ namespace LinkSearch.Services
                 );
 
                 // 调用rerank API
-                var rerankResponse = await CallRerankApiAsync(rerankRequest, apiKey);
+                var rerankResponse = await CallRerankApiAsync(rerankRequest, apiKey, cancellationToken).ConfigureAwait(false);
                 
                 if (rerankResponse == null || rerankResponse.Results == null || rerankResponse.Results.Length == 0)
                 {
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine("Rerank API返回空结果，返回原始结果");
+                    Log.Debug("Rerank API返回空结果，返回原始结果");
 #endif
                     return linkResults;
                 }
@@ -162,8 +182,8 @@ namespace LinkSearch.Services
                 }
 
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank完成，重新排序后的链接数量: {rerankedResults.Count}");
-                System.Diagnostics.Debug.WriteLine($"Rerank总耗时: {startTime.ElapsedMilliseconds}ms");
+                Log.Debug($"Rerank完成，重新排序后的链接数量: {rerankedResults.Count}");
+                Log.Debug($"Rerank总耗时: {startTime.ElapsedMilliseconds}ms");
 #endif
                 return rerankedResults;
             }
@@ -171,7 +191,7 @@ namespace LinkSearch.Services
             {
                 // 记录异常并返回原始结果
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank过程中发生异常");
+                Log.Debug($"Rerank过程中发生异常");
 #endif
                 
                 return linkResults;
@@ -186,106 +206,101 @@ namespace LinkSearch.Services
         /// <returns>rerank响应</returns>
         [UnconditionalSuppressMessage("Trimming", "IL2026")]
         [UnconditionalSuppressMessage("AOT", "IL3050")]
-        private async Task<RerankResponse?> CallRerankApiAsync(RerankRequest request, string apiKey)
+        private async Task<RerankResponse?> CallRerankApiAsync(RerankRequest request, string apiKey, System.Threading.CancellationToken cancellationToken = default)
         {
 #if DEBUG
-            System.Diagnostics.Debug.WriteLine("开始调用rerank API");
+            Log.Debug("开始调用rerank API");
 #endif
             
             var apiUrl = _settingsManager.RerankApiUrl;
             if (string.IsNullOrWhiteSpace(apiUrl))
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine("Rerank API URL未设置");
+                Log.Debug("Rerank API URL未设置");
 #endif
                 return null;
             }
 
             try
             {
-                // 序列化请求
+                // 序列化请求为 UTF-8 字节，避免中间 string 带来的大对象分配
                 var serializationStart = System.Diagnostics.Stopwatch.StartNew();
-                var jsonContent = JsonSerializer.Serialize(request, _jsonSerializerOptions);
+                var bytes = JsonSerializer.SerializeToUtf8Bytes(request, s_jsonSerializerOptions);
                 serializationStart.Stop();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"JSON序列化完成，耗时: {serializationStart.ElapsedMilliseconds}ms，内容长度: {jsonContent.Length}");
+                Log.Debug($"JSON序列化完成，耗时: {serializationStart.ElapsedMilliseconds}ms，字节长度: {bytes.Length}");
 #endif
-                
-                var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-                
-                // 设置请求头
-                _httpClient.DefaultRequestHeaders.Clear();
-                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {apiKey}");
-                
-                // 发送请求
+
+                using var content = new ByteArrayContent(bytes);
+                content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+                // 为每个请求创建 HttpRequestMessage，避免修改共享 HttpClient.DefaultRequestHeaders 导致并发竞态
+                var requestMessage = new HttpRequestMessage(HttpMethod.Post, apiUrl)
+                {
+                    Content = content
+                };
+                requestMessage.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                requestMessage.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+                // 发送请求（使用 ResponseHeadersRead 可在处理大响应时减少内存占用）
                 var apiCallStart = System.Diagnostics.Stopwatch.StartNew();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"开始调用rerank API");
+                Log.Debug($"开始调用rerank API");
 #endif
-                
-                var response = await _httpClient.PostAsync(apiUrl, content);
-                
+
+                using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+
                 apiCallStart.Stop();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"API调用完成，耗时: {apiCallStart.ElapsedMilliseconds}ms");
-                
-                // 调试日志：记录响应状态码
-                System.Diagnostics.Debug.WriteLine($"Rerank API响应状态码: {response.StatusCode}");
+                Log.Debug($"API调用完成，耗时: {apiCallStart.ElapsedMilliseconds}ms");
+                Log.Debug($"Rerank API响应状态码: {response.StatusCode}");
 #endif
-                
+
                 if (!response.IsSuccessStatusCode)
                 {
-                    var errorContent = await response.Content.ReadAsStringAsync();
+                    var errorContent = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 #if DEBUG
-                    System.Diagnostics.Debug.WriteLine($"Rerank API请求失败，状态码: {response.StatusCode}, 响应内容: {errorContent}");
+                    Log.Debug($"Rerank API请求失败，状态码: {response.StatusCode}, 响应内容: {errorContent}");
 #endif
                     return null;
                 }
-                
-                var responseJson = await response.Content.ReadAsStringAsync();
-                
-                // 调试提示：显示 API 响应内容（仅在开发环境）
-// #if DEBUG
-//                 System.Diagnostics.Debug.WriteLine($"Rerank API 响应: {responseJson}");
-// #endif
-                
-                // 反序列化响应
+
+                // 使用流式反序列化，避免把整个响应先读入 string
+                await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                 var deserializationStart = System.Diagnostics.Stopwatch.StartNew();
-                var rerankResponse = JsonSerializer.Deserialize<RerankResponse>(responseJson, _jsonSerializerOptions);
+                var rerankResponse = await JsonSerializer.DeserializeAsync<RerankResponse>(responseStream, s_jsonSerializerOptions, cancellationToken).ConfigureAwait(false);
                 deserializationStart.Stop();
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"JSON反序列化完成，耗时: {deserializationStart.ElapsedMilliseconds}ms");
-                
-                System.Diagnostics.Debug.WriteLine("Rerank API调用成功");
+                Log.Debug($"JSON反序列化完成，耗时: {deserializationStart.ElapsedMilliseconds}ms");
+                Log.Debug("Rerank API调用成功");
 #endif
                 return rerankResponse;
             }
             catch (HttpRequestException)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API HTTP请求异常");
+                Log.Debug($"Rerank API HTTP请求异常");
 #endif
                 return null;
             }
             catch (TaskCanceledException)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API任务取消异常（超时）");
+                Log.Debug($"Rerank API任务取消异常（超时）");
 #endif
                 return null;
             }
             catch (JsonException)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API JSON序列化异常");
+                Log.Debug($"Rerank API JSON序列化异常");
 #endif
                 return null;
             }
             catch (Exception)
             {
 #if DEBUG
-                System.Diagnostics.Debug.WriteLine($"Rerank API未预期的异常");
+                Log.Debug($"Rerank API未预期的异常");
 #endif
                 return null;
             }
@@ -296,7 +311,8 @@ namespace LinkSearch.Services
         /// </summary>
         public void Dispose()
         {
-            _httpClient?.Dispose();
+            // 不要释放共享 HttpClient（SharedHttpClient）
+            // 仅在将来需要释放其他托管/非托管资源时在此处添加清理逻辑。
         }
     }
 }
