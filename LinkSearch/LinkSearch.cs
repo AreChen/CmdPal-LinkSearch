@@ -6,6 +6,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.CommandPalette.Extensions;
+using LinkSearch.Helpers;
 
 namespace LinkSearch;
 
@@ -30,5 +31,21 @@ public sealed partial class LinkSearch : IExtension, IDisposable
         };
     }
 
-    public void Dispose() => this._extensionDisposedEvent.Set();
+    public void Dispose()
+    {
+        try
+        {
+            // 释放 Provider 资源，确保后台任务被取消，避免宿主长时运行崩溃
+            (_provider as IDisposable)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"LinkSearch.Dispose 释放 Provider 异常: {ex.Message}");
+        }
+        finally
+        {
+            // 无论释放是否成功，都设置事件以通知宿主
+            this._extensionDisposedEvent.Set();
+        }
+    }
 }

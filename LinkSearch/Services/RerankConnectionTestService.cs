@@ -6,6 +6,7 @@ using System;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics.CodeAnalysis;
 using LinkSearch.Helpers;
@@ -27,6 +28,8 @@ namespace LinkSearch.Services
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        // 服务级取消令牌源：在 Provider.Dispose 时取消，确保 HTTP 请求可被及时终止
+        private readonly CancellationTokenSource _serviceCts = new();
  
         /// <summary>
         /// 构造函数
@@ -58,6 +61,10 @@ namespace LinkSearch.Services
 #endif
             
             var startTime = DateTimeOffset.UtcNow;
+            
+            // 链接服务级取消令牌与外部传入的取消令牌，任一取消则请求取消
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _serviceCts.Token);
+            var effectiveToken = linkedCts.Token;
             
             try
             {
@@ -118,7 +125,7 @@ namespace LinkSearch.Services
                 requestMessage.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
  
                 // 发送请求（流式读取响应头，减少内存占用）
-                using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
                 var responseTimeMs = GetElapsedTimeMs(startTime);
  
                 // 调试日志：记录响应状态码
@@ -129,7 +136,7 @@ namespace LinkSearch.Services
                 if (!response.IsSuccessStatusCode)
                 {
                     // 非成功分支读取响应内容以便返回详细信息
-                    var errorContent = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    var errorContent = await response.Content.ReadAsStringAsync(effectiveToken).ConfigureAwait(false);
                     
                     // 根据状态码确定错误类型
                     string errorType;
@@ -178,8 +185,8 @@ namespace LinkSearch.Services
                 // 尝试解析响应（使用流式反序列化，支持取消）
                 try
                 {
-                    await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                    var rerankResponse = await JsonSerializer.DeserializeAsync<RerankResponse>(responseStream, s_jsonSerializerOptions, cancellationToken).ConfigureAwait(false);
+                    await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
+                    var rerankResponse = await JsonSerializer.DeserializeAsync<RerankResponse>(responseStream, s_jsonSerializerOptions, effectiveToken).ConfigureAwait(false);
                     
                     if (rerankResponse == null)
                     {
@@ -215,6 +222,16 @@ namespace LinkSearch.Services
                         string.Empty
                     );
                 }
+            }
+            catch (OperationCanceledException) when (effectiveToken.IsCancellationRequested)
+            {
+                // 专门处理取消场景，记录为取消而非错误
+                Log.Info("Rerank API 连接测试已取消");
+                return RerankConnectionTestResult.CreateFailure(
+                    "Canceled",
+                    "连接测试已取消",
+                    GetElapsedTimeMs(startTime)
+                );
             }
             catch (HttpRequestException httpEx)
             {
@@ -260,10 +277,11 @@ namespace LinkSearch.Services
                     GetElapsedTimeMs(startTime)
                 );
             }
-            catch (TaskCanceledException)
+            catch (TaskCanceledException ex) when (!effectiveToken.IsCancellationRequested)
             {
+                // 超时等取消场景
 #if DEBUG
-                Log.Debug($"Rerank API任务取消异常（超时）");
+                Log.Debug($"Rerank API任务取消异常（超时）: {ex.Message}");
 #endif
                 
                 return RerankConnectionTestResult.CreateFailure(
@@ -316,8 +334,17 @@ namespace LinkSearch.Services
         /// </summary>
         public void Dispose()
         {
+            try
+            {
+                // 取消所有可能正在进行的 API 请求
+                _serviceCts.Cancel();
+                _serviceCts.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"RerankConnectionTestService.Dispose 释放异常: {ex.Message}");
+            }
             // 使用共享 HttpClient，不在此处 Dispose
-            // 保留方法以便将来清理其他资源
         }
     }
 }

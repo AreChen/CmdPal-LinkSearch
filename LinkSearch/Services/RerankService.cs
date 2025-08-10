@@ -11,6 +11,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using LinkSearch.Helpers;
 using LinkSearch.Models;
@@ -29,6 +30,8 @@ namespace LinkSearch.Services
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = false
         };
+        // 服务级取消令牌源：在 Provider.Dispose 时取消，确保 HTTP 请求可被及时终止
+        private readonly CancellationTokenSource _serviceCts = new();
         
         /// <summary>
         /// 构造函数
@@ -221,6 +224,10 @@ namespace LinkSearch.Services
                 return null;
             }
 
+            // 链接服务级取消令牌与外部传入的取消令牌，任一取消则请求取消
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _serviceCts.Token);
+            var effectiveToken = linkedCts.Token;
+
             try
             {
                 // 序列化请求为 UTF-8 字节，避免中间 string 带来的大对象分配
@@ -248,7 +255,7 @@ namespace LinkSearch.Services
                 Log.Debug($"开始调用rerank API");
 #endif
 
-                using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, effectiveToken).ConfigureAwait(false);
 
                 apiCallStart.Stop();
 #if DEBUG
@@ -258,7 +265,7 @@ namespace LinkSearch.Services
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    var errorContent = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    var errorContent = await response.Content.ReadAsStringAsync(effectiveToken).ConfigureAwait(false);
 #if DEBUG
                     Log.Debug($"Rerank API请求失败，状态码: {response.StatusCode}, 响应内容: {errorContent}");
 #endif
@@ -266,9 +273,9 @@ namespace LinkSearch.Services
                 }
 
                 // 使用流式反序列化，避免把整个响应先读入 string
-                await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
                 var deserializationStart = System.Diagnostics.Stopwatch.StartNew();
-                var rerankResponse = await JsonSerializer.DeserializeAsync<RerankResponse>(responseStream, s_jsonSerializerOptions, cancellationToken).ConfigureAwait(false);
+                var rerankResponse = await JsonSerializer.DeserializeAsync<RerankResponse>(responseStream, s_jsonSerializerOptions, effectiveToken).ConfigureAwait(false);
                 deserializationStart.Stop();
 #if DEBUG
                 Log.Debug($"JSON反序列化完成，耗时: {deserializationStart.ElapsedMilliseconds}ms");
@@ -276,31 +283,38 @@ namespace LinkSearch.Services
 #endif
                 return rerankResponse;
             }
-            catch (HttpRequestException)
+            catch (OperationCanceledException) when (effectiveToken.IsCancellationRequested)
+            {
+                // 专门处理取消场景，记录为取消而非错误
+                Log.Info("Rerank API 请求已取消");
+                return null;
+            }
+            catch (HttpRequestException ex)
             {
 #if DEBUG
-                Log.Debug($"Rerank API HTTP请求异常");
+                Log.Debug($"Rerank API HTTP请求异常: {ex.Message}");
 #endif
                 return null;
             }
-            catch (TaskCanceledException)
+            catch (TaskCanceledException ex) when (!effectiveToken.IsCancellationRequested)
             {
+                // 超时等取消场景
 #if DEBUG
-                Log.Debug($"Rerank API任务取消异常（超时）");
+                Log.Debug($"Rerank API任务取消异常（超时）: {ex.Message}");
 #endif
                 return null;
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
 #if DEBUG
-                Log.Debug($"Rerank API JSON序列化异常");
+                Log.Debug($"Rerank API JSON序列化异常: {ex.Message}");
 #endif
                 return null;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
 #if DEBUG
-                Log.Debug($"Rerank API未预期的异常");
+                Log.Debug($"Rerank API未预期的异常: {ex.Message}");
 #endif
                 return null;
             }
@@ -311,8 +325,17 @@ namespace LinkSearch.Services
         /// </summary>
         public void Dispose()
         {
+            try
+            {
+                // 取消所有可能正在进行的 API 请求
+                _serviceCts.Cancel();
+                _serviceCts.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"RerankService.Dispose 释放异常: {ex.Message}");
+            }
             // 不要释放共享 HttpClient（SharedHttpClient）
-            // 仅在将来需要释放其他托管/非托管资源时在此处添加清理逻辑。
         }
     }
 }

@@ -186,6 +186,8 @@ namespace LinkSearch
         private string _lastErrorMessage = string.Empty;
         private DateTime _lastErrorTime = DateTime.MinValue;
         private readonly System.Threading.SemaphoreSlim _searchSemaphore = new System.Threading.SemaphoreSlim(1, 1);
+        // 捕获 UI 同步上下文用于跨线程安全更新 Items（避免后台线程调用 RaiseItemsChanged 导致崩溃/快捷键异常）
+        private readonly SynchronizationContext? _syncContext;
 // 使用 HttpClientProvider.Shared（由 LinkSearch.Helpers.HttpClientProvider 提供）
 // (已在 Helpers/HttpClientProvider.cs 中定义，避免在此文件重复声明)
         
@@ -222,6 +224,17 @@ namespace LinkSearch
             
             // 订阅设置变更事件
             _settingsManager.Settings.SettingsChanged += OnSettingsChanged;
+
+            // 捕获当前同步上下文（UI线程），用于安全触发 RaiseItemsChanged
+            try
+            {
+                _syncContext = SynchronizationContext.Current;
+                Log.Info($"LinkSearchPage 捕获到 SynchronizationContext: {(_syncContext != null)}");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"捕获 SynchronizationContext 失败: {ex.Message}");
+            }
         }
         
         /// <summary>
@@ -239,7 +252,14 @@ namespace LinkSearch
             if (!string.IsNullOrWhiteSpace(_currentQuery))
             {
                 // 取消当前的延迟搜索，然后重新开始
-                _ = DebouncedUpdateItemsAsync(_currentQuery, _currentQueryVersion);
+                var t = DebouncedUpdateItemsAsync(_currentQuery, _currentQueryVersion);
+                t.ContinueWith(tt =>
+                {
+                    if (tt.IsFaulted)
+                    {
+                        Log.Error($"DebouncedUpdateItemsAsync 未观察到的异常: {tt.Exception?.Flatten().Message}");
+                    }
+                }, TaskScheduler.Default);
             }
         }
         
@@ -301,12 +321,26 @@ namespace LinkSearch
             if (string.IsNullOrWhiteSpace(newSearch))
             {
                 // 对于空查询，直接更新UI而不使用信号量（保留原先行为）
-                _ = UpdateItemsAsync(newSearch, System.Threading.CancellationToken.None);
+                var t0 = UpdateItemsAsync(newSearch, System.Threading.CancellationToken.None);
+                t0.ContinueWith(tt =>
+                {
+                    if (tt.IsFaulted)
+                    {
+                        Log.Error($"UpdateItemsAsync 未观察到的异常: {tt.Exception?.Flatten().Message}");
+                    }
+                }, TaskScheduler.Default);
                 return;
             }
         
             // 直接调用 DebouncedUpdateItemsAsync（异步方法会在必要时释放线程）
-            _ = DebouncedUpdateItemsAsync(newSearch, _currentQueryVersion);
+            var t1 = DebouncedUpdateItemsAsync(newSearch, _currentQueryVersion);
+            t1.ContinueWith(tt =>
+            {
+                if (tt.IsFaulted)
+                {
+                    Log.Error($"DebouncedUpdateItemsAsync 未观察到的异常: {tt.Exception?.Flatten().Message}");
+                }
+            }, TaskScheduler.Default);
         }
         
         private async System.Threading.Tasks.Task UpdateItemsAsync(string query, System.Threading.CancellationToken cancellationToken = default)
@@ -316,7 +350,27 @@ namespace LinkSearch
                 // 清除之前的错误信息
                 _lastErrorMessage = string.Empty;
                 _allItems = await GetItemsAsync(query, cancellationToken).ConfigureAwait(false);
-                RaiseItemsChanged(0);
+                // 确保在 UI 同步上下文中触发 RaiseItemsChanged，避免跨线程更新导致崩溃/快捷键失效
+                try
+                {
+                    if (_syncContext != null)
+                    {
+                        _syncContext.Post(_ =>
+                        {
+                            try { RaiseItemsChanged(0); }
+                            catch (Exception ex2) { Log.Error($"RaiseItemsChanged 调用失败: {ex2.Message}"); }
+                        }, null);
+                    }
+                    else
+                    {
+                        // 无法获取到 UI 同步上下文时退化为直接调用（记录日志以便后续审计）
+                        RaiseItemsChanged(0);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"在发布 RaiseItemsChanged 时发生异常: {ex.Message}");
+                }
             }
             catch (Exception ex)
             {
@@ -340,7 +394,27 @@ namespace LinkSearch
                         Icon = Icons.LinkSearchExtIcon
                     }
                 };
-                RaiseItemsChanged(0);
+                // 确保在 UI 同步上下文中触发 RaiseItemsChanged，避免跨线程问题
+                try
+                {
+                    if (_syncContext != null)
+                    {
+                        _syncContext.Post(_ =>
+                        {
+                            try { RaiseItemsChanged(0); }
+                            catch (Exception ex2) { Log.Error($"RaiseItemsChanged 调用失败: {ex2.Message}"); }
+                        }, null);
+                    }
+                    else
+                    {
+                        RaiseItemsChanged(0);
+                    }
+                }
+                catch (Exception exInner)
+                {
+                    Log.Error($"在发布 RaiseItemsChanged 时发生异常: {exInner.Message}");
+                }
+
             }
         }
         
