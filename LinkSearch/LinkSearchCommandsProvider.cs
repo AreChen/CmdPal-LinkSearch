@@ -8,6 +8,7 @@ using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 using LinkSearch;
 using LinkSearch.Helpers;
+using LinkSearch.Presenters;
 using LinkSearch.Services;
 
 namespace LinkSearch;
@@ -16,8 +17,11 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
 {
     private readonly ICommandItem[] _commands;
     private static readonly SettingsManager _settingsManager = new();
+    private readonly SearchCache _searchCache;
     private readonly RerankService _rerankService;
     private readonly RerankConnectionTestService _rerankConnectionTestService;
+    private readonly LinkwardenService _linkwardenService;
+    private readonly SearchResultPresenter _presenter;
     // 统一的释放取消源：在 Provider.Dispose 时取消，尽可能终止后台任务，降低宿主长时运行风险
     private readonly CancellationTokenSource _disposeCts = new();
     // 持有 Page 引用以便在 Provider.Dispose 时显式释放
@@ -31,11 +35,15 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
         Settings = _settingsManager.Settings;
         
         // 创建服务实例
+        _searchCache = new SearchCache();
         _rerankService = new RerankService(_settingsManager);
         _rerankConnectionTestService = new RerankConnectionTestService(_settingsManager);
+        _linkwardenService = new LinkwardenService(_settingsManager, _searchCache);
+        _presenter = new SearchResultPresenter(_settingsManager);
+        _settingsManager.Settings.SettingsChanged += OnProviderSettingsChanged;
         
         // 构建页面并保存实例，便于统一释放
-        _page = new LinkSearchPage(_settingsManager, _rerankService, _rerankConnectionTestService);
+        _page = new LinkSearchPage(_settingsManager, _linkwardenService, _rerankService, _rerankConnectionTestService, _presenter);
 
         _commands = [
             new CommandItem(_page) {
@@ -50,6 +58,11 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
         return _commands;
     }
 
+    private void OnProviderSettingsChanged(object? sender, Microsoft.CommandPalette.Extensions.Toolkit.Settings args)
+    {
+        _searchCache.Clear();
+    }
+
     /// <summary>
     /// Provider 释放：取消内部 CTS，并释放 Page 与 Service
     /// </summary>
@@ -59,6 +72,9 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
         _disposed = true;
         // 取消所有可能关联的后台操作
         try { _disposeCts.Cancel(); } catch { }
+
+        try { _settingsManager.Settings.SettingsChanged -= OnProviderSettingsChanged; }
+        catch (Exception ex) { Log.Error($"LinkSearchCommandsProvider.Dispose SettingsChanged 取消订阅异常: {ex.Message}"); }
 
         // 依次释放托管对象，逐一捕获异常避免影响整体释放流程
         try { _page?.Dispose(); }

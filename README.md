@@ -18,6 +18,7 @@ English | [简体中文](./README.zh.md)
 - Go to the extension settings page and enable the LinkSearch extension
 - Configure your preferred shortcut key for the extension
 - Configure Linkwarden server address, AccessTokens, and maximum search return results
+- In extension settings, choose the interface language: Auto, Simplified Chinese, or English
 - (Optional) Enable and configure Rerank service parameters (such as API URL, Key, model name, etc.)
 - Enter the shortcut key to start searching!
 

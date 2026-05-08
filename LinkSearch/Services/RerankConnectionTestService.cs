@@ -17,7 +17,7 @@ namespace LinkSearch.Services
     /// <summary>
     /// Rerank连接测试服务类，实现测试连接功能
     /// </summary>
-    internal partial class RerankConnectionTestService : IDisposable
+    internal sealed partial class RerankConnectionTestService : IDisposable
     {
         private static readonly string[] TestDocuments = new[] { "This is a test document for connection testing." };
         
@@ -74,7 +74,7 @@ namespace LinkSearch.Services
                 {
                     return RerankConnectionTestResult.CreateFailure(
                         "ConfigurationError",
-                        "Rerank API URL未设置",
+                        "Rerank API URL is not configured",
                         GetElapsedTimeMs(startTime)
                     );
                 }
@@ -85,7 +85,7 @@ namespace LinkSearch.Services
                 {
                     return RerankConnectionTestResult.CreateFailure(
                         "ConfigurationError",
-                        "Rerank API Key未设置",
+                        "Rerank API key is not configured",
                         GetElapsedTimeMs(startTime)
                     );
                 }
@@ -96,7 +96,7 @@ namespace LinkSearch.Services
                 {
                     return RerankConnectionTestResult.CreateFailure(
                         "ConfigurationError",
-                        "Rerank模型名称未设置",
+                        "Rerank model name is not configured",
                         GetElapsedTimeMs(startTime)
                     );
                 }
@@ -146,30 +146,30 @@ namespace LinkSearch.Services
                     {
                         case 401:
                             errorType = "AuthenticationError";
-                            errorMessage = "API Key无效或已过期";
+                            errorMessage = "API key is invalid or expired";
                             break;
                         case 403:
                             errorType = "AuthorizationError";
-                            errorMessage = "没有访问权限";
+                            errorMessage = "Access is not authorized";
                             break;
                         case 404:
                             errorType = "EndpointError";
-                            errorMessage = "API端点不存在";
+                            errorMessage = "API endpoint does not exist";
                             break;
                         case 429:
                             errorType = "RateLimitError";
-                            errorMessage = "请求频率超过限制";
+                            errorMessage = "Request rate limit exceeded";
                             break;
                         case 500:
                         case 502:
                         case 503:
                         case 504:
                             errorType = "ServerError";
-                            errorMessage = "服务器内部错误";
+                            errorMessage = "Server returned an internal error";
                             break;
                         default:
                             errorType = "HttpError";
-                            errorMessage = $"HTTP请求失败: {response.StatusCode}";
+                            errorMessage = $"HTTP request failed: {response.StatusCode}";
                             break;
                     }
                     
@@ -192,7 +192,7 @@ namespace LinkSearch.Services
                     {
                         return RerankConnectionTestResult.CreateFailure(
                             "ResponseError",
-                            "API响应为空",
+                            "API response was empty",
                             responseTimeMs,
                             (int)response.StatusCode,
                             string.Empty
@@ -214,10 +214,10 @@ namespace LinkSearch.Services
                     Log.Debug($"Rerank API响应JSON解析异常: {jsonEx.Message}");
     #endif
                     
-                    return RerankConnectionTestResult.CreateFailure(
-                        "ResponseError",
-                        $"API响应格式错误: {jsonEx.Message}",
-                        responseTimeMs,
+                        return RerankConnectionTestResult.CreateFailure(
+                            "ResponseError",
+                            $"API response format is invalid: {jsonEx.Message}",
+                            responseTimeMs,
                         (int)response.StatusCode,
                         string.Empty
                     );
@@ -229,7 +229,7 @@ namespace LinkSearch.Services
                 Log.Info("Rerank API 连接测试已取消");
                 return RerankConnectionTestResult.CreateFailure(
                     "Canceled",
-                    "连接测试已取消",
+                    "Connection test was canceled",
                     GetElapsedTimeMs(startTime)
                 );
             }
@@ -248,27 +248,27 @@ namespace LinkSearch.Services
                 if (httpEx.Message.Contains("SSL") || httpEx.Message.Contains("security") || httpEx.Message.Contains("certificate"))
                 {
                     errorType = "SslError";
-                    errorMessage = "SSL连接失败：服务器证书无效或不受信任";
+                    errorMessage = "SSL connection failed: the server certificate is invalid or untrusted";
                 }
                 else if (httpEx.Message.Contains("timeout") || httpEx.Message.Contains("timed out"))
                 {
                     errorType = "TimeoutError";
-                    errorMessage = "连接超时：服务器响应时间过长";
+                    errorMessage = "Connection timed out: the server took too long to respond";
                 }
                 else if (httpEx.Message.Contains("resolve") || httpEx.Message.Contains("DNS"))
                 {
                     errorType = "DnsError";
-                    errorMessage = "DNS解析失败：无法解析服务器地址";
+                    errorMessage = "DNS resolution failed: unable to resolve the server address";
                 }
                 else if (httpEx.Message.Contains("connect") || httpEx.Message.Contains("connection"))
                 {
                     errorType = "ConnectionError";
-                    errorMessage = "连接失败：无法连接到服务器，请检查网络连接和服务器地址";
+                    errorMessage = "Connection failed: unable to connect to the server";
                 }
                 else
                 {
                     errorType = "NetworkError";
-                    errorMessage = $"网络请求失败: {httpEx.Message}";
+                    errorMessage = $"Network request failed: {httpEx.Message}";
                 }
                 
                 return RerankConnectionTestResult.CreateFailure(
@@ -280,13 +280,11 @@ namespace LinkSearch.Services
             catch (TaskCanceledException ex) when (!effectiveToken.IsCancellationRequested)
             {
                 // 超时等取消场景
-#if DEBUG
                 Log.Debug($"Rerank API任务取消异常（超时）: {ex.Message}");
-#endif
                 
                 return RerankConnectionTestResult.CreateFailure(
                     "TimeoutError",
-                    "请求超时：服务器响应时间过长",
+                    "Request timed out: the server took too long to respond",
                     GetElapsedTimeMs(startTime)
                 );
             }
@@ -298,7 +296,7 @@ namespace LinkSearch.Services
                 
                 return RerankConnectionTestResult.CreateFailure(
                     "ConfigurationError",
-                    $"URL格式错误: {uriEx.Message}",
+                    $"URL format is invalid: {uriEx.Message}",
                     GetElapsedTimeMs(startTime)
                 );
             }
@@ -313,7 +311,7 @@ namespace LinkSearch.Services
                 
                 return RerankConnectionTestResult.CreateFailure(
                     "UnknownError",
-                    $"未预期的错误: {ex.Message}",
+                    $"Unexpected error: {ex.Message}",
                     GetElapsedTimeMs(startTime)
                 );
             }

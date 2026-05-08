@@ -10,7 +10,7 @@ namespace LinkSearch.Models
     /// <summary>
     /// 表示rerank API响应
     /// </summary>
-    internal class RerankResponse
+    internal sealed class RerankResponse
     {
         /// <summary>
         /// 模型ID
@@ -62,7 +62,7 @@ namespace LinkSearch.Models
         /// <summary>
         /// 使用情况类
         /// </summary>
-        internal class UsageInfo
+        internal sealed class UsageInfo
         {
             /// <summary>
             /// 处理的token数量

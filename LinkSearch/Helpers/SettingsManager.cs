@@ -3,7 +3,10 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using LinkSearch.Localization;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace LinkSearch.Helpers;
@@ -14,52 +17,66 @@ public class SettingsManager : JsonSettingsManager
 
     private static string Namespaced(string propertyName) => $"{_namespace}.{propertyName}";
 
+    private readonly Func<CultureInfo> _cultureProvider;
+
+    private readonly ChoiceSetSetting _language = new(
+        Namespaced(nameof(LanguageMode)),
+        new List<ChoiceSetSetting.Choice>
+        {
+            new("auto", "Auto"),
+            new("zh-CN", "Chinese"),
+            new("en-US", "English"),
+        })
+    {
+        Value = "auto",
+    };
+
     private readonly TextSetting _linkwardenBaseUrl = new(
         Namespaced(nameof(LinkwardenBaseUrl)),
         "Linkwarden Base URL",
-        "Linkwarden服务器的URL地址",
+        "Linkwarden server URL",
         string.Empty);
 
     private readonly TextSetting _linkwardenApiKey = new(
         Namespaced(nameof(LinkwardenApiKey)),
         "Linkwarden API Key",
-        "Linkwarden API访问密钥",
+        "Linkwarden API access key",
         string.Empty);
 
     private readonly ToggleSetting _enableRerank = new(
         Namespaced(nameof(EnableRerank)),
-        "启用 Rerank 功能",
-        "是否启用rerank功能对搜索结果进行重新排序",
+        "Enable Rerank",
+        "Reorder search results using rerank",
         false);
 
     private readonly TextSetting _rerankApiUrl = new(
         Namespaced(nameof(RerankApiUrl)),
         "Rerank API URL",
-        "Rerank API的URL地址",
+        "Rerank API URL",
         "https://api.siliconflow.cn/v1/rerank");
 
     private readonly TextSetting _rerankApiKey = new(
         Namespaced(nameof(RerankApiKey)),
         "Rerank API Key",
-        "Rerank API访问密钥",
+        "Rerank API access key",
         string.Empty);
 
     private readonly TextSetting _rerankModelName = new(
         Namespaced(nameof(RerankModelName)),
-        "Rerank 模型名称",
-        "用于rerank的模型名称",
+        "Rerank Model Name",
+        "Model name used for rerank",
         "BAAI/bge-reranker-v2-m3");
 
     private readonly TextSetting _searchDelayMilliseconds = new(
         Namespaced(nameof(SearchDelayMilliseconds)),
-        "搜索延迟时间（毫秒）",
-        "搜索输入后的延迟时间，用于减少不必要的搜索请求（300-2000毫秒）",
+        "Search Delay (milliseconds)",
+        "Delay after search input to reduce unnecessary requests (300-2000 ms)",
         "600");
 
     private readonly TextSetting _maxResults = new(
         Namespaced(nameof(MaxResults)),
-        "最大检索结果数量",
-        "最大检索结果数量（1-200之间）",
+        "Maximum Search Results",
+        "Maximum number of search results (1-200)",
         "50");
 
     public string LinkwardenBaseUrl
@@ -412,9 +429,16 @@ public class SettingsManager : JsonSettingsManager
     }
 
     public SettingsManager()
+        : this(null, null)
     {
-        FilePath = SettingsJsonPath();
+    }
 
+    internal SettingsManager(string? settingsFilePath, Func<CultureInfo>? cultureProvider)
+    {
+        FilePath = settingsFilePath ?? SettingsJsonPath();
+        _cultureProvider = cultureProvider ?? (() => CultureInfo.CurrentUICulture);
+
+        Settings.Add(_language);
         Settings.Add(_linkwardenBaseUrl);
         Settings.Add(_linkwardenApiKey);
         Settings.Add(_enableRerank);
@@ -426,8 +450,121 @@ public class SettingsManager : JsonSettingsManager
 
         // Load settings from file upon initialization
         LoadSettings();
+        ApplyLocalizedSettingText();
 
-        Settings.SettingsChanged += (s, a) => this.SaveSettings();
+        Settings.SettingsChanged += (s, a) =>
+        {
+            ApplyLocalizedSettingText();
+            this.SaveSettings();
+        };
+    }
+
+    internal LanguageMode LanguageMode => LocalizedStrings.ParseLanguageMode(_language.Value);
+
+    internal UiLanguage CurrentUiLanguage => LocalizedStrings.ResolveUiLanguage(LanguageMode, _cultureProvider());
+
+    internal string Text(LocalizedTextKey key) => LocalizedStrings.Get(key, CurrentUiLanguage);
+
+    internal string Format(LocalizedTextKey key, params object[] args) => LocalizedStrings.Format(key, CurrentUiLanguage, args);
+
+    internal void SetForTest(string key, string value)
+    {
+        if (key == _linkwardenBaseUrl.Key)
+        {
+            _linkwardenBaseUrl.Value = value;
+            return;
+        }
+
+        if (key == _linkwardenApiKey.Key)
+        {
+            _linkwardenApiKey.Value = value;
+            return;
+        }
+
+        if (key == _rerankApiUrl.Key)
+        {
+            _rerankApiUrl.Value = value;
+            return;
+        }
+
+        if (key == _rerankApiKey.Key)
+        {
+            _rerankApiKey.Value = value;
+            return;
+        }
+
+        if (key == _rerankModelName.Key)
+        {
+            _rerankModelName.Value = value;
+            return;
+        }
+
+        if (key == _searchDelayMilliseconds.Key)
+        {
+            _searchDelayMilliseconds.Value = value;
+            return;
+        }
+
+        if (key == _maxResults.Key)
+        {
+            _maxResults.Value = value;
+            return;
+        }
+
+        if (key == _language.Key)
+        {
+            _language.Value = value;
+            ApplyLocalizedSettingText();
+            return;
+        }
+
+        throw new InvalidOperationException($"Setting key was not found: {key}");
+    }
+
+    internal T GetSettingForTest<T>(string key)
+        where T : class
+    {
+        object? setting = key switch
+        {
+            _ when key == _language.Key => _language,
+            _ when key == _linkwardenBaseUrl.Key => _linkwardenBaseUrl,
+            _ when key == _linkwardenApiKey.Key => _linkwardenApiKey,
+            _ when key == _enableRerank.Key => _enableRerank,
+            _ when key == _rerankApiUrl.Key => _rerankApiUrl,
+            _ when key == _rerankApiKey.Key => _rerankApiKey,
+            _ when key == _rerankModelName.Key => _rerankModelName,
+            _ when key == _searchDelayMilliseconds.Key => _searchDelayMilliseconds,
+            _ when key == _maxResults.Key => _maxResults,
+            _ => null,
+        };
+
+        return setting as T ?? throw new InvalidOperationException($"Setting key was not found or has a different type: {key}");
+    }
+
+    private void ApplyLocalizedSettingText()
+    {
+        _language.Label = Text(LocalizedTextKey.LanguageSettingLabel);
+        _language.Description = Text(LocalizedTextKey.LanguageSettingDescription);
+        _language.Choices[0].Title = Text(LocalizedTextKey.LanguageAutoChoice);
+        _language.Choices[1].Title = Text(LocalizedTextKey.LanguageChineseChoice);
+        _language.Choices[2].Title = Text(LocalizedTextKey.LanguageEnglishChoice);
+
+        _linkwardenBaseUrl.Label = Text(LocalizedTextKey.LinkwardenBaseUrlLabel);
+        _linkwardenBaseUrl.Description = Text(LocalizedTextKey.LinkwardenBaseUrlDescription);
+        _linkwardenApiKey.Label = Text(LocalizedTextKey.LinkwardenApiKeyLabel);
+        _linkwardenApiKey.Description = Text(LocalizedTextKey.LinkwardenApiKeyDescription);
+        _enableRerank.Label = Text(LocalizedTextKey.EnableRerankLabel);
+        _enableRerank.Description = Text(LocalizedTextKey.EnableRerankDescription);
+        _rerankApiUrl.Label = Text(LocalizedTextKey.RerankApiUrlLabel);
+        _rerankApiUrl.Description = Text(LocalizedTextKey.RerankApiUrlDescription);
+        _rerankApiKey.Label = Text(LocalizedTextKey.RerankApiKeyLabel);
+        _rerankApiKey.Description = Text(LocalizedTextKey.RerankApiKeyDescription);
+        _rerankModelName.Label = Text(LocalizedTextKey.RerankModelNameLabel);
+        _rerankModelName.Description = Text(LocalizedTextKey.RerankModelNameDescription);
+        _searchDelayMilliseconds.Label = Text(LocalizedTextKey.SearchDelayLabel);
+        _searchDelayMilliseconds.Description = Text(LocalizedTextKey.SearchDelayDescription);
+        _maxResults.Label = Text(LocalizedTextKey.MaxResultsLabel);
+        _maxResults.Description = Text(LocalizedTextKey.MaxResultsDescription);
     }
 
     /// <summary>

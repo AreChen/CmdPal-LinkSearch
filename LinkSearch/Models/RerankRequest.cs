@@ -10,7 +10,7 @@ namespace LinkSearch.Models
     /// <summary>
     /// 表示rerank API请求
     /// </summary>
-    internal class RerankRequest
+    internal sealed class RerankRequest
     {
         /// <summary>
         /// 查询文本

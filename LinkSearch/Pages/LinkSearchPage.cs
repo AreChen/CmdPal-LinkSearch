@@ -3,17 +3,16 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.IO;
-using System.Linq;
-using System.Net.Http;
-using System.Text.Json;
 using System.Collections.Generic;
-using System.ComponentModel;
+using System.Globalization;
 using System.Threading.Tasks;
 using System.Threading;
 using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 using LinkSearch.Helpers;
+using LinkSearch.Localization;
+using LinkSearch.Models;
+using LinkSearch.Presenters;
 using LinkSearch.Services;
 using System.Diagnostics.CodeAnalysis;
 
@@ -21,69 +20,11 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace LinkSearch
 {
-    // Linkwarden API 响应数据结构
-    internal class LinkResult
-    {
-        public int id { get; set; }
-        public string name { get; set; }
-        public string description { get; set; }
-        public string url { get; set; }
-        public Tag[] tags { get; set; }
-        public Collection collection { get; set; }
-        
-        // 添加构造函数来初始化引用类型属性，避免可空引用类型警告
-        public LinkResult()
-        {
-// #if DEBUG
-//             // 调试日志：验证构造函数被调用
-//             Log.Debug("LinkResult 构造函数被调用");
-// #endif
-            
-            // 初始化引用类型属性为默认值
-            name = string.Empty;
-            description = string.Empty;
-            url = string.Empty;
-            tags = Array.Empty<Tag>();
-            collection = new Collection();
-        }
-    }
-
-    internal class Tag
-    {
-        public int id { get; set; }
-        public string name { get; set; }
-        
-        // 添加构造函数来初始化引用类型属性
-        public Tag()
-        {
-// #if DEBUG
-//             // 调试日志：验证 Tag 构造函数被调用
-//             Log.Debug("Tag 构造函数被调用");
-// #endif
-            name = string.Empty;
-        }
-    }
-
-    internal class Collection
-    {
-        public int id { get; set; }
-        public string name { get; set; }
-        
-        // 添加构造函数来初始化引用类型属性
-        public Collection()
-        {
-// #if DEBUG
-//             // 调试日志：验证 Collection 构造函数被调用
-//             Log.Debug("Collection 构造函数被调用");
-// #endif
-            name = string.Empty;
-        }
-    }
-
     // 打开链接命令
-    internal partial class OpenUrlCommand : InvokableCommand
+    internal sealed partial class OpenUrlCommand : InvokableCommand
     {
         private readonly string _url;
+        private readonly SettingsManager? _settingsManager;
         private static readonly HashSet<string> AllowedSchemes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "http",
@@ -93,7 +34,15 @@ namespace LinkSearch
             "file"
         };
 
-        public OpenUrlCommand(string url)
+        public OpenUrlCommand(string url) : this(url, null, false)
+        {
+        }
+
+        public OpenUrlCommand(string url, SettingsManager settingsManager) : this(url, settingsManager, false)
+        {
+        }
+
+        private OpenUrlCommand(string url, SettingsManager? settingsManager, bool triggerPropertyChange)
         {
             // URL校验
             if (string.IsNullOrWhiteSpace(url))
@@ -107,11 +56,19 @@ namespace LinkSearch
             }
 
             _url = url;
+            _settingsManager = settingsManager;
+
+            if (triggerPropertyChange)
+            {
+                OnPropertyChanged(nameof(Id));
+            }
         }
             
 
         public override string Id => _url;
-        public override string Name => "打开链接";
+        public override string Name => _settingsManager?.Text(LocalizedTextKey.OpenLinkCommandName) ?? LocalizedStrings.Get(
+            LocalizedTextKey.OpenLinkCommandName,
+            LocalizedStrings.ResolveUiLanguage(LanguageMode.Auto, CultureInfo.CurrentUICulture));
         public override IconInfo Icon => Icons.LinkSearchExtIcon;
 
 
@@ -120,18 +77,14 @@ namespace LinkSearch
         public new event Windows.Foundation.TypedEventHandler<object, Microsoft.CommandPalette.Extensions.IPropChangedEventArgs>? PropChanged;
 
         // 保护方法用于触发属性变更事件
-        protected new virtual void OnPropertyChanged(string propertyName)
+        private new void OnPropertyChanged(string propertyName)
         {
             PropChanged?.Invoke(this, new Microsoft.CommandPalette.Extensions.Toolkit.PropChangedEventArgs(propertyName));
         }
 
         // 在构造函数中触发属性变更事件，确保事件被使用
-        public OpenUrlCommand(string url, bool triggerPropertyChange = false) : this(url)
+        public OpenUrlCommand(string url, bool triggerPropertyChange = false) : this(url, null, triggerPropertyChange)
         {
-            if (triggerPropertyChange)
-            {
-                OnPropertyChanged(nameof(Id));
-            }
         }
 
         public override CommandResult Invoke()
@@ -178,8 +131,10 @@ namespace LinkSearch
         private long _currentQueryVersion; // 查询版本号，用于验证查询有效性
         private long _activeSearchVersion; // 标记搜索正在进行中
         private readonly SettingsManager _settingsManager;
+        private readonly LinkwardenService _linkwardenService;
         private readonly RerankService _rerankService;
         private readonly RerankConnectionTestService _rerankConnectionTestService;
+        private readonly SearchResultPresenter _presenter;
         private System.Threading.CancellationTokenSource? _searchCancellationTokenSource;
         // 搜索延迟时间（毫秒）- 现在从设置中获取
         private int SearchDelayMilliseconds => _settingsManager.SearchDelayMilliseconds;
@@ -188,39 +143,25 @@ namespace LinkSearch
         private readonly System.Threading.SemaphoreSlim _searchSemaphore = new System.Threading.SemaphoreSlim(1, 1);
         // 捕获 UI 同步上下文用于跨线程安全更新 Items（避免后台线程调用 RaiseItemsChanged 导致崩溃/快捷键异常）
         private readonly SynchronizationContext? _syncContext;
-// 使用 HttpClientProvider.Shared（由 LinkSearch.Helpers.HttpClientProvider 提供）
-// (已在 Helpers/HttpClientProvider.cs 中定义，避免在此文件重复声明)
-        
-        public LinkSearchPage() : this(new SettingsManager())
+        public LinkSearchPage(
+            SettingsManager settingsManager,
+            LinkwardenService linkwardenService,
+            RerankService rerankService,
+            RerankConnectionTestService rerankConnectionTestService,
+            SearchResultPresenter presenter)
         {
-        }
-        
-        public LinkSearchPage(SettingsManager settingsManager) : this(settingsManager, new RerankService(settingsManager), new RerankConnectionTestService(settingsManager))
-        {
-        }
-        
-        public LinkSearchPage(SettingsManager settingsManager, RerankService rerankService) : this(settingsManager, rerankService, new RerankConnectionTestService(settingsManager))
-        {
-        }
-        
-        public LinkSearchPage(SettingsManager settingsManager, RerankService rerankService, RerankConnectionTestService rerankConnectionTestService)
-        {
-            Icon = IconHelpers.FromRelativePath("Assets\\StoreLogo.png");
-            Title = "LinkSearch";
-            Name = "Open";
-            PlaceholderText = "请输入关键词进行 Linkwarden 检索";
-            
-            EmptyContent = new ListItem(new NoOpCommand())
-            {
-                Title = "未找到相关结果",
-                Subtitle = "请尝试其他关键词",
-                Icon = Icons.LinkSearchExtIcon
-            };
-            
             // 使用传入的服务
             _settingsManager = settingsManager ?? throw new ArgumentNullException(nameof(settingsManager));
+            _linkwardenService = linkwardenService ?? throw new ArgumentNullException(nameof(linkwardenService));
             _rerankService = rerankService ?? throw new ArgumentNullException(nameof(rerankService));
             _rerankConnectionTestService = rerankConnectionTestService ?? throw new ArgumentNullException(nameof(rerankConnectionTestService));
+            _presenter = presenter ?? throw new ArgumentNullException(nameof(presenter));
+
+            Icon = IconHelpers.FromRelativePath("Assets\\StoreLogo.png");
+            Title = "LinkSearch";
+            Name = _settingsManager.Text(LocalizedTextKey.PageName);
+            PlaceholderText = _settingsManager.Text(LocalizedTextKey.SearchPlaceholder);
+            EmptyContent = _presenter.CreateEmptyResultItem();
             
             // 订阅设置变更事件
             _settingsManager.Settings.SettingsChanged += OnSettingsChanged;
@@ -247,9 +188,16 @@ namespace LinkSearch
 #if DEBUG
             Log.Debug("设置发生变更，重新加载当前搜索结果");
 #endif
+            Name = _settingsManager.Text(LocalizedTextKey.PageName);
+            PlaceholderText = _settingsManager.Text(LocalizedTextKey.SearchPlaceholder);
+            EmptyContent = _presenter.CreateEmptyResultItem();
             
-            // 如果当前有搜索查询，则重新加载结果
-            if (!string.IsNullOrWhiteSpace(_currentQuery))
+            if (string.IsNullOrWhiteSpace(_currentQuery))
+            {
+                _allItems = new List<IListItem> { _presenter.CreateEmptyQueryItem() };
+                RaiseItemsChangedOnUiThread();
+            }
+            else
             {
                 // 取消当前的延迟搜索，然后重新开始
                 var t = DebouncedUpdateItemsAsync(_currentQuery, _currentQueryVersion);
@@ -295,11 +243,11 @@ namespace LinkSearch
                 
                 if (testResult.IsSuccess)
                 {
-                    return $"连接成功！响应时间: {testResult.ResponseTimeMs}ms";
+                    return _settingsManager.Format(LocalizedTextKey.RerankConnectionSuccess, testResult.ResponseTimeMs);
                 }
                 else
                 {
-                    return $"连接失败: {testResult.ErrorType} - {testResult.ErrorMessage}";
+                    return RerankConnectionMessageFormatter.FormatFailure(testResult, _settingsManager.CurrentUiLanguage);
                 }
             }
             catch (Exception ex)
@@ -307,7 +255,7 @@ namespace LinkSearch
 #if DEBUG
                 Log.Debug($"测试Rerank连接时发生异常: {ex.Message}");
 #endif
-                return $"测试连接时发生异常: {ex.Message}";
+                return _settingsManager.Format(LocalizedTextKey.RerankConnectionException, ex.Message);
             }
         }
         
@@ -315,13 +263,14 @@ namespace LinkSearch
         {
             // 立即更新当前查询和版本号
             _currentQuery = newSearch;
-            Interlocked.Increment(ref _currentQueryVersion);
+            var queryVersion = Interlocked.Increment(ref _currentQueryVersion);
         
             // 直接以 fire-and-forget 的方式调用异步方法，避免额外将工作项排到线程池导致短时大量 TP worker 创建
             if (string.IsNullOrWhiteSpace(newSearch))
             {
+                CancelCurrentSearch();
                 // 对于空查询，直接更新UI而不使用信号量（保留原先行为）
-                var t0 = UpdateItemsAsync(newSearch, System.Threading.CancellationToken.None);
+                var t0 = UpdateItemsAsync(newSearch, queryVersion, System.Threading.CancellationToken.None);
                 t0.ContinueWith(tt =>
                 {
                     if (tt.IsFaulted)
@@ -333,7 +282,7 @@ namespace LinkSearch
             }
         
             // 直接调用 DebouncedUpdateItemsAsync（异步方法会在必要时释放线程）
-            var t1 = DebouncedUpdateItemsAsync(newSearch, _currentQueryVersion);
+            var t1 = DebouncedUpdateItemsAsync(newSearch, queryVersion);
             t1.ContinueWith(tt =>
             {
                 if (tt.IsFaulted)
@@ -343,37 +292,81 @@ namespace LinkSearch
             }, TaskScheduler.Default);
         }
         
-        private async System.Threading.Tasks.Task UpdateItemsAsync(string query, System.Threading.CancellationToken cancellationToken = default)
+        private void CancelCurrentSearch()
+        {
+            var ctsToCancel = Interlocked.Exchange(ref _searchCancellationTokenSource, null);
+            if (ctsToCancel == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!ctsToCancel.IsCancellationRequested)
+                {
+                    ctsToCancel.Cancel();
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            finally
+            {
+                ctsToCancel.Dispose();
+            }
+        }
+
+        private void RaiseItemsChangedOnUiThread()
+        {
+            try
+            {
+                if (_syncContext != null)
+                {
+                    _syncContext.Post(_ =>
+                    {
+                        try { RaiseItemsChanged(0); }
+                        catch (Exception ex2) { Log.Error($"RaiseItemsChanged 调用失败: {ex2.Message}"); }
+                    }, null);
+                }
+                else
+                {
+                    // 无法获取到 UI 同步上下文时退化为直接调用（记录日志以便后续审计）
+                    RaiseItemsChanged(0);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"在发布 RaiseItemsChanged 时发生异常: {ex.Message}");
+            }
+        }
+
+        private async System.Threading.Tasks.Task UpdateItemsAsync(string query, long queryVersion, System.Threading.CancellationToken cancellationToken = default)
         {
             try
             {
                 // 清除之前的错误信息
                 _lastErrorMessage = string.Empty;
-                _allItems = await GetItemsAsync(query, cancellationToken).ConfigureAwait(false);
+                var items = await GetItemsAsync(query, cancellationToken).ConfigureAwait(false);
+                if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
+                {
+                    return;
+                }
+
+                _allItems = items;
                 // 确保在 UI 同步上下文中触发 RaiseItemsChanged，避免跨线程更新导致崩溃/快捷键失效
-                try
-                {
-                    if (_syncContext != null)
-                    {
-                        _syncContext.Post(_ =>
-                        {
-                            try { RaiseItemsChanged(0); }
-                            catch (Exception ex2) { Log.Error($"RaiseItemsChanged 调用失败: {ex2.Message}"); }
-                        }, null);
-                    }
-                    else
-                    {
-                        // 无法获取到 UI 同步上下文时退化为直接调用（记录日志以便后续审计）
-                        RaiseItemsChanged(0);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"在发布 RaiseItemsChanged 时发生异常: {ex.Message}");
-                }
+                RaiseItemsChangedOnUiThread();
+            }
+            catch (OperationCanceledException)
+            {
+                return;
             }
             catch (Exception ex)
             {
+                if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
+                {
+                    return;
+                }
+
                 // 记录错误信息
                 _lastErrorMessage = $"搜索失败: {ex.Message}";
                 _lastErrorTime = DateTime.Now;
@@ -395,25 +388,7 @@ namespace LinkSearch
                     }
                 };
                 // 确保在 UI 同步上下文中触发 RaiseItemsChanged，避免跨线程问题
-                try
-                {
-                    if (_syncContext != null)
-                    {
-                        _syncContext.Post(_ =>
-                        {
-                            try { RaiseItemsChanged(0); }
-                            catch (Exception ex2) { Log.Error($"RaiseItemsChanged 调用失败: {ex2.Message}"); }
-                        }, null);
-                    }
-                    else
-                    {
-                        RaiseItemsChanged(0);
-                    }
-                }
-                catch (Exception exInner)
-                {
-                    Log.Error($"在发布 RaiseItemsChanged 时发生异常: {exInner.Message}");
-                }
+                RaiseItemsChangedOnUiThread();
 
             }
         }
@@ -593,7 +568,7 @@ namespace LinkSearch
                     Log.Debug($"执行搜索，查询: {_currentQuery}, 版本: {queryVersion}");
 #endif
                     // 使用_currentQuery而不是参数query，确保使用最新的查询字符串
-                    await UpdateItemsAsync(_currentQuery, localCancellationTokenSource.Token).ConfigureAwait(false);
+                    await UpdateItemsAsync(_currentQuery, queryVersion, localCancellationTokenSource.Token).ConfigureAwait(false);
                 }
             }
             catch (System.Threading.Tasks.TaskCanceledException)
@@ -687,576 +662,39 @@ namespace LinkSearch
             }
         }
         
-        private string GetLinkwardenBaseUrl()
-        {
-            return _settingsManager.LinkwardenBaseUrl;
-        }
-
         private async System.Threading.Tasks.Task<List<IListItem>> GetItemsAsync(string query, System.Threading.CancellationToken cancellationToken = default)
         {
-            // 如果查询为空，返回提示信息
-            if (string.IsNullOrWhiteSpace(query))
-            {
-                return new List<IListItem>
-                {
-                    new ListItem(new NoOpCommand()) { Title = "请输入关键词进行 Linkwarden 检索", Icon = Icons.LinkSearchExtIcon }
-                };
-            }
-
-            // 读取 Token
-            var token = _settingsManager.LinkwardenApiKey;
-            
-            // 调试日志：验证Token获取
-#if DEBUG
-            Log.Debug($"Token获取结果: {(string.IsNullOrEmpty(token) ? "未获取到Token" : "已获取到Token")}");
-#endif
-
-            // 统一判断 token 是否为空，如果为空则返回错误提示
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                return new List<IListItem>
-                {
-                    new ListItem(new NoOpCommand()) { Title = "未检测到 Linkwarden API Token", Icon = Icons.LinkSearchExtIcon },
-                    new ListItem(new NoOpCommand()) { Title = "请在插件设置中配置API Key", Icon = Icons.LinkSearchExtIcon },
-                    new ListItem(new NoOpCommand()) { Title = "或设置环境变量: set LINKWARDEN_API_KEY=your_token", Icon = Icons.LinkSearchExtIcon },
-                    new ListItem(new NoOpCommand()) { Title = "或创建配置文件: LinkSearch/config.json", Icon = Icons.LinkSearchExtIcon }
-                };
-            }
-            
-            // 验证API Key格式 - 使用类型名调用静态方法
-            if (!SettingsManager.ValidateApiKey(token))
-            {
-                return new List<IListItem>
-                {
-                    new ListItem(new NoOpCommand()) { Title = "API Key 格式无效", Icon = Icons.LinkSearchExtIcon },
-                    new ListItem(new NoOpCommand()) { Title = "请检查您的API Key是否正确", Icon = Icons.LinkSearchExtIcon }
-                };
-            }
-
-            // 调用 API
             try
             {
-                // 使用全局共享 HttpClient，通过为每次请求创建 HttpRequestMessage 来避免并发修改 DefaultRequestHeaders
-                string baseUrl = GetLinkwardenBaseUrl();
-                
-                // 调试日志：记录Base URL
-#if DEBUG
-                Log.Debug($"使用的Base URL: {baseUrl}");
-#endif
-                
-                // 验证Base URL是否有效
-                if (string.IsNullOrWhiteSpace(baseUrl))
+                if (string.IsNullOrWhiteSpace(query))
                 {
-#if DEBUG
-                    Log.Debug("Base URL 为空或无效");
-#endif
-                    return new List<IListItem>
-                    {
-                        new ListItem(new NoOpCommand()) { Title = "Linkwarden Base URL 无效", Icon = Icons.LinkSearchExtIcon },
-                        new ListItem(new NoOpCommand()) { Title = "请在插件设置中配置Base URL", Icon = Icons.LinkSearchExtIcon }
-                    };
-                }
-                
-                var url = $"{baseUrl}/api/v1/search?searchQueryString={Uri.EscapeDataString(query)}";
-                
-                // 调试日志：记录完整请求URL
-#if DEBUG
-                Log.Debug($"完整请求URL: {url}");
-#endif
-
-                var requestMessage = new HttpRequestMessage(HttpMethod.Get, url);
-                requestMessage.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
-                requestMessage.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
- 
-                using var resp = await HttpClientProvider.Shared.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-                
-                // 调试日志：记录响应状态码
-#if DEBUG
-                Log.Debug($"API响应状态码: {resp.StatusCode}");
-#endif
-                
-                if (!resp.IsSuccessStatusCode)
-                {
-                    // 调试日志：记录失败原因（流式读取并尝试解析为 JSON，支持取消并减少中间 string 分配）
-                    await using var errorStream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                    // 将响应流复制到内存流以便在解析失败时回退读取完整文本
-                    using var ms = new MemoryStream();
-                    await errorStream.CopyToAsync(ms, cancellationToken).ConfigureAwait(false);
-                    ms.Position = 0;
-                    string errorContent;
-                    try
-                    {
-                        using var errorDoc = await System.Text.Json.JsonDocument.ParseAsync(ms, cancellationToken: cancellationToken).ConfigureAwait(false);
-                        var rootErr = errorDoc.RootElement;
-                        if (rootErr.ValueKind == JsonValueKind.Object &&
-                            rootErr.TryGetProperty("message", out var msgEl) &&
-                            msgEl.ValueKind == JsonValueKind.String)
-                        {
-                            errorContent = msgEl.GetString() ?? rootErr.GetRawText();
-                        }
-                        else if (rootErr.ValueKind == JsonValueKind.Object &&
-                                 rootErr.TryGetProperty("error", out var errEl) &&
-                                 errEl.ValueKind == JsonValueKind.String)
-                        {
-                            errorContent = errEl.GetString() ?? rootErr.GetRawText();
-                        }
-                        else
-                        {
-                            errorContent = rootErr.GetRawText();
-                        }
-                    }
-                    catch (System.Text.Json.JsonException)
-                    {
-                        // 解析失败则退回读取完整文本（已缓冲于内存流）
-                        ms.Position = 0;
-                        using var sr = new StreamReader(ms);
-                        errorContent = await sr.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
-                    }
-#if DEBUG
-                    Log.Debug($"API请求失败，状态码: {resp.StatusCode}, 响应内容: {errorContent}");
-#endif
-                    
-                    return new List<IListItem>
-                    {
-                        new ListItem(new NoOpCommand()) { Title = $"API 请求失败: {resp.StatusCode}", Icon = Icons.LinkSearchExtIcon }
-                    };
-                }
- 
-                // 使用流式读取并解析 JSON，支持取消，避免分配中间 string
-                await using var responseStream = await resp.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                using var doc = await System.Text.Json.JsonDocument.ParseAsync(responseStream, default, cancellationToken).ConfigureAwait(false);
-                var root = doc.RootElement;
-                
-                // 安全检查：验证"data"节点存在性
-                if (!root.TryGetProperty("data", out var dataElement))
-                {
-                    return new List<IListItem>
-                    {
-                        new ListItem(new NoOpCommand()) { Title = "API 响应格式错误: 缺少 data 节点", Icon = Icons.LinkSearchExtIcon }
-                    };
-                }
-                
-                // 检查 data 元素的类型
-                JsonElement linksElement;
-                
-                // 调试日志：记录 data 元素的类型
-// #if DEBUG
-//                 Log.Debug($"API 响应中 data 元素的类型: {dataElement.ValueKind}");
-// #endif
-                
-                // 如果 data 是一个对象且包含 links 属性，则使用 links 属性
-                if (dataElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
-                    dataElement.TryGetProperty("links", out linksElement))
-                {
-                    // 调试日志：确认使用对象格式的 data.links
-#if DEBUG
-                    Log.Debug("使用对象格式的 data.links");
-#endif
-                }
-                // 如果 data 本身就是一个数组，则直接使用 data
-                else if (dataElement.ValueKind == System.Text.Json.JsonValueKind.Array)
-                {
-                    linksElement = dataElement;
-                    // 调试日志：确认使用数组格式的 data
-#if DEBUG
-                    Log.Debug("使用数组格式的 data");
-#endif
-                }
-                else
-                {
-                    // 调试日志：记录不支持的 data 格式
-#if DEBUG
-                    Log.Debug($"不支持的 data 格式: {dataElement.ValueKind}");
-#endif
-                    return new List<IListItem>
-                    {
-                        new ListItem(new NoOpCommand()) { Title = "API 响应格式错误: data 节点格式不正确", Icon = Icons.LinkSearchExtIcon }
-                    };
-                }
-                
-                // 安全检查：验证"links"节点为数组类型
-                if (linksElement.ValueKind != System.Text.Json.JsonValueKind.Array)
-                {
-                    return new List<IListItem>
-                    {
-                        new ListItem(new NoOpCommand()) { Title = "API 响应格式错误: links 节点不是数组类型", Icon = Icons.LinkSearchExtIcon }
-                    };
-                }
-                
-                var items = new List<IListItem>();
-
-                // 轻量预解析：仅提取必要字段，避免未启用rerank时的对象与日志开销
-                var rawList = new List<(string Name, string Desc, string Url, string Collection, string TagsStr, JsonElement? TagsElement)>();
-                foreach (var link in linksElement.EnumerateArray())
-                {
-                    var name = link.GetProperty("name").GetString() ?? string.Empty;
-                    var desc = link.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
-                    var urlstr = link.GetProperty("url").GetString() ?? string.Empty;
-
-                    JsonElement? tagsElement = null;
-                    string tagsStr = "";
-                    if (link.TryGetProperty("tags", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.Array)
-                    {
-                        tagsElement = t;
-                        // 内联方法：拼接标签字符串（避免额外分配）
-                        static string GetTagsString(JsonElement tagArr)
-                        {
-                            // 使用 StringBuilder 直接拼接，避免临时 List 和 string.Join 的分配
-                            var sb = new System.Text.StringBuilder(64);
-                            bool first = true;
-                            foreach (var tag in tagArr.EnumerateArray())
-                            {
-                                if (tag.TryGetProperty("name", out var tn))
-                                {
-                                    var tagName = tn.GetString();
-                                    if (!string.IsNullOrEmpty(tagName))
-                                    {
-                                        if (!first)
-                                        {
-                                            sb.Append(", ");
-                                        }
-                                        sb.Append(tagName);
-                                        first = false;
-                                    }
-                                }
-                            }
-                            return sb.ToString();
-                        }
-                        tagsStr = GetTagsString(t);
-                    }
-
-                    var collection = link.TryGetProperty("collection", out var c) && c.TryGetProperty("name", out var cn) ? cn.GetString() ?? "" : "";
-
-                    rawList.Add((name, desc, urlstr, collection, tagsStr, tagsElement));
+                    return new List<IListItem> { _presenter.CreateEmptyQueryItem() };
                 }
 
-                // 未启用rerank：直接根据rawList渲染UI，避免创建LinkResult/Tag/Collection对象与日志
-                if (!_settingsManager.EnableRerank || rawList.Count == 0)
+                var searchResult = await _linkwardenService.SearchAsync(query, cancellationToken).ConfigureAwait(false);
+                if (searchResult.Error is not null)
                 {
-                    // 应用最大结果数量限制
-                    var maxResults = _settingsManager.MaxResults;
-                    var processedCount = 0;
-                    
-                    foreach (var r in rawList)
-                    {
-                        // 检查是否已达到最大结果数量限制
-                        if (processedCount >= maxResults)
-                        {
-                            break;
-                        }
-                        
-                        if (string.IsNullOrWhiteSpace(r.Url))
-                            continue;
-
-                        try
-                        {
-                            var display = $"{r.Name} [{r.Collection}]";
-                            var detail = $"{r.Desc} {(string.IsNullOrEmpty(r.TagsStr) ? "" : $"#标签: {r.TagsStr}")}";
-                            var openUrlCommand = new OpenUrlCommand(r.Url);
-                            items.Add(new ListItem(openUrlCommand)
-                            {
-                                Title = display,
-                                Subtitle = detail,
-                                Icon = Icons.LinkSearchExtIcon
-                            });
-                            processedCount++;
-                        }
-                        catch (ArgumentException)
-                        {
-                            Log.Debug($"跳过无效URL: {r.Url}");
-                        }
-                    }
-
-                    Log.Debug($"处理完成，共找到 {items.Count} 个结果");
-
-                    if (items.Count == 0)
-                    {
-                        Log.Debug("添加'未找到相关结果'提示");
-                        items.Add(new ListItem(new NoOpCommand()) { Title = "未找到相关结果", Icon = Icons.LinkSearchExtIcon });
-                    }
-
-                    return items;
+                    return new List<IListItem>(_presenter.CreateErrorItems(searchResult.Error));
                 }
 
-                // 启用rerank：仅此分支把rawList转换为LinkResult并调用RerankService
-                var objectCreationStart = System.Diagnostics.Stopwatch.StartNew();
-#if DEBUG
-                Log.Debug($"开始创建LinkResult对象，数量: {rawList.Count}");
-#endif
-                
-                var linkResults = new List<LinkResult>(rawList.Count);
-                foreach (var r in rawList)
+                var links = searchResult.Links;
+                if (_settingsManager.EnableRerank)
                 {
-                    var lr = new LinkResult
-                    {
-                        id = 0,
-                        name = r.Name,
-                        description = r.Desc,
-                        url = r.Url,
-                        tags = r.TagsElement.HasValue ? GetTagsArray(r.TagsElement.Value) : Array.Empty<Tag>(),
-                        collection = new Collection { name = r.Collection }
-                    };
-                    linkResults.Add(lr);
-                }
-                
-                objectCreationStart.Stop();
-#if DEBUG
-                Log.Debug($"LinkResult对象创建完成，耗时: {objectCreationStart.ElapsedMilliseconds}ms");
-#endif
-
-                try
-                {
-                    var rerankStart = System.Diagnostics.Stopwatch.StartNew();
-    #if DEBUG
-                    Log.Debug($"开始调用RerankService");
-    #endif
-                    
-                    var rerankedResults = await _rerankService.RerankLinksAsync(query, linkResults, cancellationToken).ConfigureAwait(false);
-                    
-                    rerankStart.Stop();
-#if DEBUG
-                    Log.Debug($"RerankService调用完成，总耗时: {rerankStart.ElapsedMilliseconds}ms");
-#endif
- 
-                    items.Clear();
-                    // 应用最大结果数量限制
-                    var maxResults = _settingsManager.MaxResults;
-                    var processedCount = 0;
-                    
-                    foreach (var lr in rerankedResults)
-                    {
-                        // 检查是否已达到最大结果数量限制
-                        if (processedCount >= maxResults)
-                        {
-                            break;
-                        }
-                        
-                        if (string.IsNullOrWhiteSpace(lr.url))
-                            continue;
-
-                        try
-                        {
-                            var display = $"{lr.name} [{lr.collection.name}]";
-                            var tagsStr2 = GetTagsStringFromArray(lr.tags);
-                            var detail = $"{lr.description} {(string.IsNullOrEmpty(tagsStr2) ? "" : $"#标签: {tagsStr2}")}";
-                            var openUrlCommand = new OpenUrlCommand(lr.url);
-                            items.Add(new ListItem(openUrlCommand)
-                            {
-                                Title = display,
-                                Subtitle = detail,
-                                Icon = Icons.LinkSearchExtIcon
-                            });
-                            processedCount++;
-                        }
-                        catch (ArgumentException)
-                        {
-#if DEBUG
-                            Log.Debug($"跳过无效URL: {lr.url}");
-#endif
-                        }
-                    }
-
-#if DEBUG
-                    Log.Debug($"Rerank完成，重排序后的结果数量: {items.Count}");
-#endif
-                }
-                catch (Exception)
-                {
-                    // 记录rerank异常，使用原始rawList回退
-    #if DEBUG
-                    Log.Debug($"Rerank过程中发生异常");
-                    Log.Debug($"使用原始搜索结果");
-    #endif
-
-                    items.Clear();
-                    // 应用最大结果数量限制
-                    var maxResults = _settingsManager.MaxResults;
-                    var processedCount = 0;
-                    
-                    foreach (var r in rawList)
-                    {
-                        // 检查是否已达到最大结果数量限制
-                        if (processedCount >= maxResults)
-                        {
-                            break;
-                        }
-                        
-                        if (string.IsNullOrWhiteSpace(r.Url))
-                            continue;
-
-                        try
-                        {
-                            var display = $"{r.Name} [{r.Collection}]";
-                            var detail = $"{r.Desc} {(string.IsNullOrEmpty(r.TagsStr) ? "" : $"#标签: {r.TagsStr}")}";
-                            var openUrlCommand = new OpenUrlCommand(r.Url);
-                            items.Add(new ListItem(openUrlCommand)
-                            {
-                                Title = display,
-                                Subtitle = detail,
-                                Icon = Icons.LinkSearchExtIcon
-                            });
-                            processedCount++;
-                        }
-                        catch (ArgumentException)
-                        {
-#if DEBUG
-                            Log.Debug($"跳过无效URL: {r.Url}");
-#endif
-                        }
-                    }
+                    links = await _rerankService.RerankLinksAsync(query, links, cancellationToken).ConfigureAwait(false);
                 }
 
-    #if DEBUG
-                Log.Debug($"处理完成，共找到 {items.Count} 个结果");
-    #endif
-
-                if (items.Count == 0)
-                {
-    #if DEBUG
-                    Log.Debug("添加'未找到相关结果'提示");
-    #endif
-                    items.Add(new ListItem(new NoOpCommand()) { Title = "未找到相关结果", Icon = Icons.LinkSearchExtIcon });
-                }
-
-                return items;
+                return new List<IListItem>(_presenter.CreateResultItems(links));
             }
-            catch (System.Net.Http.HttpRequestException)
+            catch (OperationCanceledException)
             {
-                // 调试日志：记录HTTP请求异常详细信息
-#if DEBUG
-                Log.Debug($"HTTP请求异常");
-#endif
-                
-                // 根据异常类型提供更具体的错误提示
-                string errorMessage = "网络请求失败：请检查网络连接和服务器地址";
-                
-                return new List<IListItem>
-                {
-                    new ListItem(new NoOpCommand()) { Title = errorMessage, Icon = Icons.LinkSearchExtIcon },
-                    new ListItem(new NoOpCommand()) { Title = "请检查服务器地址和网络连接", Icon = Icons.LinkSearchExtIcon }
-                };
-            }
-            catch (System.Threading.Tasks.TaskCanceledException)
-            {
-                // 调试日志：记录任务取消异常（通常是超时）
-#if DEBUG
-                Log.Debug($"任务取消异常（超时）");
-#endif
-                
-                return new List<IListItem>
-                {
-                    new ListItem(new NoOpCommand()) { Title = "请求超时：服务器响应时间过长", Icon = Icons.LinkSearchExtIcon },
-                    new ListItem(new NoOpCommand()) { Title = "请检查网络连接或稍后重试", Icon = Icons.LinkSearchExtIcon }
-                };
-            }
-            catch (System.UriFormatException)
-            {
-                // 调试日志：记录URL格式异常
-#if DEBUG
-                Log.Debug($"URL格式异常");
-#endif
-                
-                return new List<IListItem>
-                {
-                    new ListItem(new NoOpCommand()) { Title = "URL格式错误：服务器地址无效", Icon = Icons.LinkSearchExtIcon },
-                    new ListItem(new NoOpCommand()) { Title = "请在插件设置中检查服务器地址", Icon = Icons.LinkSearchExtIcon }
-                };
+                throw;
             }
             catch (Exception ex)
             {
-                // 调试日志：记录其他异常
-#if DEBUG
-                Log.Debug($"未预期的异常: {ex.Message}");
-                Log.Debug($"异常类型: {ex.GetType().Name}");
-                Log.Debug($"内部异常: {ex.InnerException?.Message}");
-                Log.Debug($"堆栈跟踪: {ex.StackTrace}");
-#endif
-                
-                return new List<IListItem>
-                {
-                    new ListItem(new NoOpCommand()) { Title = $"API 调用异常: {ex.Message}", Icon = Icons.LinkSearchExtIcon }
-                };
+                Log.Debug($"Search failed: {ex.Message}");
+                var error = new LinkwardenSearchError(LinkwardenSearchErrorKind.Unexpected, LocalizedTextKey.ApiCallException, ex.Message);
+                return new List<IListItem>(_presenter.CreateErrorItems(error));
             }
-        }
-        
-        /// <summary>
-        /// 从JsonElement中提取标签数组
-        /// </summary>
-        /// <param name="tagElement">标签JsonElement</param>
-        /// <returns>标签数组</returns>
-        private static Tag[] GetTagsArray(JsonElement tagElement)
-        {
-            if (tagElement.ValueKind != System.Text.Json.JsonValueKind.Array)
-            {
-                return Array.Empty<Tag>();
-            }
-            
-            // 先统计有效标签数量，避免使用 List<T> 的中间分配
-            int count = 0;
-            foreach (var tag in tagElement.EnumerateArray())
-            {
-                if (tag.TryGetProperty("name", out var tn) && !string.IsNullOrEmpty(tn.GetString()))
-                {
-                    count++;
-                }
-            }
-
-            if (count == 0)
-            {
-                return Array.Empty<Tag>();
-            }
-
-            var result = new Tag[count];
-            int idx = 0;
-            foreach (var tag in tagElement.EnumerateArray())
-            {
-                if (tag.TryGetProperty("name", out var tn))
-                {
-                    var tagName = tn.GetString();
-                    if (!string.IsNullOrEmpty(tagName))
-                    {
-                        result[idx++] = new Tag { name = tagName };
-                    }
-                }
-            }
-
-            // 如果实际数量少于预估，则调整数组大小
-            if (idx != count)
-            {
-                Array.Resize(ref result, idx);
-            }
-
-            return result;
-        }
-        
-        /// <summary>
-        /// 从标签数组中获取标签字符串
-        /// </summary>
-        /// <param name="tags">标签数组</param>
-        /// <returns>标签字符串</returns>
-        private static string GetTagsStringFromArray(Tag[] tags)
-        {
-            if (tags == null || tags.Length == 0)
-            {
-                return string.Empty;
-            }
-            
-            // 使用 StringBuilder 遍历拼接，避免 LINQ 中间集合分配
-            var sb = new System.Text.StringBuilder(64);
-            bool first = true;
-            for (int i = 0; i < tags.Length; i++)
-            {
-                var name = tags[i]?.name;
-                if (string.IsNullOrEmpty(name))
-                    continue;
-                if (!first)
-                {
-                    sb.Append(", ");
-                }
-                sb.Append(name);
-                first = false;
-            }
-            return sb.ToString();
         }
         
         public override IListItem[] GetItems()
@@ -1283,22 +721,8 @@ namespace LinkSearch
                 _settingsManager.Settings.SettingsChanged -= OnSettingsChanged;
             }
             
-            // 释放服务资源
-            if (_rerankService != null)
-            {
-                _rerankService.Dispose();
-            }
-            
-            if (_rerankConnectionTestService != null)
-            {
-                _rerankConnectionTestService.Dispose();
-            }
-            
             // 释放信号量资源
-            if (_searchSemaphore != null)
-            {
-                _searchSemaphore.Dispose();
-            }
+            _searchSemaphore.Dispose();
         }
     }
 }

@@ -9,7 +9,7 @@ namespace LinkSearch.Models
     /// <summary>
     /// 表示单个rerank结果
     /// </summary>
-    internal class RerankResult
+    internal sealed class RerankResult
     {
         /// <summary>
         /// 文档索引

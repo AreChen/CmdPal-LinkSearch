@@ -4,10 +4,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
-using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -21,7 +18,7 @@ namespace LinkSearch.Services
     /// <summary>
     /// Rerank服务类，实现rerank API调用功能
     /// </summary>
-    internal partial class RerankService : IDisposable
+    internal sealed partial class RerankService : IDisposable
     {
         private readonly SettingsManager _settingsManager;
         private readonly HttpClient _httpClient;
@@ -51,154 +48,97 @@ namespace LinkSearch.Services
         }
 
         /// <summary>
-        /// 对链接结果进行重新排序
+        /// 对 Linkwarden 链接进行重新排序
         /// </summary>
         /// <param name="query">查询文本</param>
-        /// <param name="linkResults">链接结果列表</param>
-        /// <returns>重新排序后的链接结果列表</returns>
-        public async Task<List<LinkResult>> RerankLinksAsync(string query, List<LinkResult> linkResults, System.Threading.CancellationToken cancellationToken = default)
+        /// <param name="links">Linkwarden 链接列表</param>
+        /// <param name="cancellationToken">取消令牌</param>
+        /// <returns>重新排序后的 Linkwarden 链接列表</returns>
+        public Task<IReadOnlyList<LinkwardenLink>> RerankLinksAsync(string query, IReadOnlyList<LinkwardenLink> links, CancellationToken cancellationToken = default)
         {
-            var startTime = System.Diagnostics.Stopwatch.StartNew();
-#if DEBUG
-            Log.Debug($"开始对链接进行rerank，查询: {query}, 链接数量: {linkResults.Count}");
-#endif
-            
-            // 检查是否启用rerank功能
-            if (!_settingsManager.EnableRerank)
+            return RerankItemsAsync(query, links, BuildDocument, cancellationToken);
+        }
+
+        private async Task<IReadOnlyList<T>> RerankItemsAsync<T>(string query, IReadOnlyList<T> items, Func<T, string> buildDocument, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (items.Count == 0 || !_settingsManager.EnableRerank)
             {
-#if DEBUG
-                Log.Debug("Rerank功能未启用，返回原始结果");
-#endif
-                return linkResults;
+                return items;
             }
 
-            // 检查API Key是否有效
             var apiKey = _settingsManager.RerankApiKey;
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-#if DEBUG
-                Log.Debug("Rerank API Key未设置，返回原始结果");
-#endif
-                return linkResults;
-            }
-
-            // 检查链接结果是否为空
-            if (linkResults == null || linkResults.Count == 0)
-            {
-#if DEBUG
-                Log.Debug("链接结果为空，返回原始结果");
-#endif
-                return linkResults ?? new List<LinkResult>();
+                return items;
             }
 
             try
             {
-                // 将链接结果转换为文档格式
-                var documentBuildStart = System.Diagnostics.Stopwatch.StartNew();
-#if DEBUG
-                Log.Debug($"开始构建文档，链接数量: {linkResults.Count}");
-#endif
-                
-                // 减少中间分配：使用可复用的 StringBuilder，避免 LINQ/临时集合及多次构造 StringBuilder
-                var documents = new string[linkResults.Count];
-                var sb = new StringBuilder(256);
-                for (int i = 0; i < linkResults.Count; i++)
+                var documents = new string[items.Count];
+                for (var i = 0; i < items.Count; i++)
                 {
-                    var link = linkResults[i];
-                    sb.Clear();
-
-                    sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "名称: {0}", link.name));
-                    sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "描述: {0}", link.description));
-                    sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "URL: {0}", link.url));
-
-                    // 直接拼接标签，避免先构造集合再 Join 导致的分配
-                    if (link.tags != null && link.tags.Length > 0)
-                    {
-                        bool hasTag = false;
-                        for (int ti = 0; ti < link.tags.Length; ti++)
-                        {
-                            var tagName = link.tags[ti]?.name;
-                            if (string.IsNullOrEmpty(tagName))
-                                continue;
-
-                            if (!hasTag)
-                            {
-                                sb.Append("标签: ");
-                                sb.Append(tagName);
-                                hasTag = true;
-                            }
-                            else
-                            {
-                                sb.Append(", ");
-                                sb.Append(tagName);
-                            }
-                        }
-
-                        if (hasTag)
-                        {
-                            sb.AppendLine();
-                        }
-                    }
-
-                    if (link.collection != null && !string.IsNullOrEmpty(link.collection.name))
-                    {
-                        sb.AppendLine(string.Format(CultureInfo.CurrentCulture, "集合: {0}", link.collection.name));
-                    }
-
-                    documents[i] = sb.ToString();
+                    documents[i] = buildDocument(items[i]);
                 }
-                
-                documentBuildStart.Stop();
-#if DEBUG
-                Log.Debug($"文档构建完成，耗时: {documentBuildStart.ElapsedMilliseconds}ms");
-#endif
 
-                // 创建rerank请求
-                var rerankRequest = RerankRequest.Create(
-                    query: query,
-                    documents: documents,
-                    model: _settingsManager.RerankModelName,
-                    topN: documents.Length,
-                    returnDocuments: false,
-                    returnScores: true
-                );
-
-                // 调用rerank API
+                var rerankRequest = RerankRequest.Create(query, documents, _settingsManager.RerankModelName, documents.Length, false, true);
                 var rerankResponse = await CallRerankApiAsync(rerankRequest, apiKey, cancellationToken).ConfigureAwait(false);
-                
-                if (rerankResponse == null || rerankResponse.Results == null || rerankResponse.Results.Length == 0)
-                {
-#if DEBUG
-                    Log.Debug("Rerank API返回空结果，返回原始结果");
-#endif
-                    return linkResults;
-                }
-
-                // 根据rerank结果重新排序原始链接数据
-                var rerankedResults = new List<LinkResult>();
-                foreach (var result in rerankResponse.Results)
-                {
-                    if (result.Index >= 0 && result.Index < linkResults.Count)
-                    {
-                        rerankedResults.Add(linkResults[result.Index]);
-                    }
-                }
-
-#if DEBUG
-                Log.Debug($"Rerank完成，重新排序后的链接数量: {rerankedResults.Count}");
-                Log.Debug($"Rerank总耗时: {startTime.ElapsedMilliseconds}ms");
-#endif
-                return rerankedResults;
+                return ApplyRerankOrder(items, rerankResponse);
             }
-            catch (Exception)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // 记录异常并返回原始结果
-#if DEBUG
-                Log.Debug($"Rerank过程中发生异常");
-#endif
-                
-                return linkResults;
+                throw;
             }
+            catch (Exception ex)
+            {
+                Log.Debug($"Rerank failed and original order will be used: {ex.Message}");
+                return items;
+            }
+        }
+
+        private static string BuildDocument(LinkwardenLink link)
+        {
+            var sb = new StringBuilder(256);
+            sb.Append("Name: ").AppendLine(link.Name);
+            sb.Append("Description: ").AppendLine(link.Description);
+            sb.Append("URL: ").AppendLine(link.Url);
+            sb.Append("Tags: ").AppendLine(string.Join(", ", link.Tags));
+            sb.Append("Collection: ").AppendLine(link.Collection);
+            return sb.ToString();
+        }
+
+        internal static IReadOnlyList<T> ApplyRerankOrder<T>(IReadOnlyList<T> links, RerankResponse? response)
+        {
+            if (response?.Results is null || response.Results.Length == 0)
+            {
+                return links;
+            }
+
+            var ordered = new List<T>(links.Count);
+            var used = new HashSet<int>();
+            foreach (var result in response.Results)
+            {
+                if (result.Index >= 0 && result.Index < links.Count && used.Add(result.Index))
+                {
+                    ordered.Add(links[result.Index]);
+                }
+            }
+
+            if (ordered.Count == 0)
+            {
+                return links;
+            }
+
+            for (var i = 0; i < links.Count; i++)
+            {
+                if (!used.Contains(i))
+                {
+                    ordered.Add(links[i]);
+                }
+            }
+
+            return ordered;
         }
 
         /// <summary>
@@ -209,7 +149,7 @@ namespace LinkSearch.Services
         /// <returns>rerank响应</returns>
         [UnconditionalSuppressMessage("Trimming", "IL2026")]
         [UnconditionalSuppressMessage("AOT", "IL3050")]
-        private async Task<RerankResponse?> CallRerankApiAsync(RerankRequest request, string apiKey, System.Threading.CancellationToken cancellationToken = default)
+        private async Task<RerankResponse?> CallRerankApiAsync(RerankRequest request, string apiKey, CancellationToken cancellationToken = default)
         {
 #if DEBUG
             Log.Debug("开始调用rerank API");
@@ -283,39 +223,33 @@ namespace LinkSearch.Services
 #endif
                 return rerankResponse;
             }
-            catch (OperationCanceledException) when (effectiveToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // 专门处理取消场景，记录为取消而非错误
-                Log.Info("Rerank API 请求已取消");
-                return null;
+                throw;
             }
-            catch (HttpRequestException ex)
+            catch (OperationCanceledException) when (_serviceCts.IsCancellationRequested)
             {
-#if DEBUG
-                Log.Debug($"Rerank API HTTP请求异常: {ex.Message}");
-#endif
+                Log.Info("Rerank API request was canceled because the service is disposing");
                 return null;
             }
             catch (TaskCanceledException ex) when (!effectiveToken.IsCancellationRequested)
             {
-                // 超时等取消场景
-#if DEBUG
-                Log.Debug($"Rerank API任务取消异常（超时）: {ex.Message}");
-#endif
+                Log.Debug($"Rerank API timed out: {ex.Message}");
+                return null;
+            }
+            catch (HttpRequestException ex)
+            {
+                Log.Debug($"Rerank API HTTP请求异常: {ex.Message}");
                 return null;
             }
             catch (JsonException ex)
             {
-#if DEBUG
                 Log.Debug($"Rerank API JSON序列化异常: {ex.Message}");
-#endif
                 return null;
             }
             catch (Exception ex)
             {
-#if DEBUG
                 Log.Debug($"Rerank API未预期的异常: {ex.Message}");
-#endif
                 return null;
             }
         }

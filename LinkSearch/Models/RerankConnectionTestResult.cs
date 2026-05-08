@@ -7,7 +7,7 @@ namespace LinkSearch.Models
     /// <summary>
     /// 表示rerank连接测试结果
     /// </summary>
-    internal class RerankConnectionTestResult
+    internal sealed class RerankConnectionTestResult
     {
         /// <summary>
         /// 测试是否成功
@@ -114,11 +114,11 @@ namespace LinkSearch.Models
         {
             if (IsSuccess)
             {
-                return $"连接成功，响应时间: {ResponseTimeMs}ms";
+                return $"Connection succeeded. Response time: {ResponseTimeMs}ms";
             }
             else
             {
-                return $"连接失败: {ErrorType} - {ErrorMessage}";
+                return $"Connection failed: {ErrorType} - {ErrorMessage}";
             }
         }
     }
