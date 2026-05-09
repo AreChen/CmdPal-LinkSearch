@@ -23,7 +23,7 @@ jobs:
           dotnet-version: '9.0.x'
 
       - name: Test
-        run: dotnet test "LinkSearch.sln" -p:Platform=x64
+        run: dotnet test "LinkSearch.sln" -p:Platform=x64 -p:PublishSingleFile=false
 
       - name: Build MSIX release packages
         shell: pwsh
