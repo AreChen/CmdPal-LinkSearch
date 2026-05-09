@@ -100,3 +100,7 @@ Issues/PRs are welcome!
 ## License
 
 MIT
+
+## Privacy
+
+[Privacy Policy](./PRIVACY.md)

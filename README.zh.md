@@ -104,3 +104,7 @@ curl --location 'https://rerank-api.provider.com/v1/rerank' \
 ## License
 
 MIT
+
+## 隐私
+
+[隐私政策](./PRIVACY.md)
