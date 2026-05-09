@@ -11,7 +11,7 @@
   <Identity
     Name="LinkSearch"
     Publisher="CN=playones, O=playones, L=arechen, S=Chengdu, C=CN"
-    Version="0.1.2.0" />
+    Version="0.1.3.0" />
   <!-- When you're ready to publish your extension, you'll need to change the
        Publisher= to match your own identity -->
 

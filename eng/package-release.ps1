@@ -166,6 +166,10 @@ try {
             "/p:Configuration=$Configuration",
             "/p:Platform=$platform",
             "/p:RuntimeIdentifier=$runtimeIdentifier",
+            '/p:PublishProfile=',
+            '/p:SelfContained=true',
+            '/p:PublishSingleFile=false',
+            '/p:PublishReadyToRun=true',
             '/p:GenerateAppxPackageOnBuild=true',
             '/p:UapAppxPackageBuildMode=SideloadOnly',
             '/p:AppxBundle=Never'
