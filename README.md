@@ -13,7 +13,8 @@ English | [简体中文](./README.zh.md)
 
 
 ## Usage
-- Since I don't have a developer certificate, you need to compile and deploy the program yourself
+- Download the latest GitHub release and extract `LinkSearch_*_msix_test_packages.zip`
+- Open the package folder matching your CPU architecture, then run `Add-AppDevPackage.ps1` with PowerShell
 - Open PowerToys' CmdPal (Command Palette)
 - Go to the extension settings page and enable the LinkSearch extension
 - Configure your preferred shortcut key for the extension
@@ -83,7 +84,7 @@ curl --location 'https://rerank-api.provider.com/v1/rerank' \
 
 ## Roadmap
 
-- [ ] Microsoft Store publishing
+- [ ] Microsoft Store publishing. The MSIX packaging pipeline is ready; final Store submission requires Partner Center app identity association.
 
 Issues/PRs are welcome!
 

@@ -1,0 +1,53 @@
+name: Release packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Test
+        run: dotnet test "LinkSearch.sln" -p:Platform=x64
+
+      - name: Build MSIX release packages
+        shell: pwsh
+        run: ./eng/package-release.ps1 -Configuration Release
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linksearch-release-packages
+          path: artifacts/release/*
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') || contains(github.ref_name, '-') }}
+          files: artifacts/release/*
+          body: |
+            LinkSearch MSIX sideload test package.
+
+            Requirements:
+            - Microsoft PowerToys with Command Palette support.
+            - Run the included `Add-AppDevPackage.ps1` from the package folder matching your CPU architecture.
+
+            Notes:
+            - This GitHub release package is signed with a temporary self-signed certificate for sideload testing.
+            - Microsoft Store submission still requires Partner Center app identity association.

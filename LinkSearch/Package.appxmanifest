@@ -11,13 +11,13 @@
   <Identity
     Name="LinkSearch"
     Publisher="CN=playones, O=playones, L=arechen, S=Chengdu, C=CN"
-    Version="0.0.1.0" />
+    Version="0.1.0.0" />
   <!-- When you're ready to publish your extension, you'll need to change the
        Publisher= to match your own identity -->
 
   <Properties>
     <DisplayName>LinkSearch</DisplayName>
-    <PublisherDisplayName>arechen</PublisherDisplayName>
+    <PublisherDisplayName>AreChen</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 
@@ -36,7 +36,7 @@
       EntryPoint="$targetentrypoint$">
       <uap:VisualElements
         DisplayName="LinkSearch"
-        Description="LinkSearch"
+        Description="Search Linkwarden links from PowerToys Command Palette"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">

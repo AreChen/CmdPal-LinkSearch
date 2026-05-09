@@ -17,7 +17,8 @@
 
 
 ## 使用
-- 由于我没有开发者证书,因此你需要进行自行编译部署程序
+- 下载最新 GitHub Release，并解压 `LinkSearch_*_msix_test_packages.zip`
+- 打开与你 CPU 架构匹配的安装包目录，然后用 PowerShell 运行 `Add-AppDevPackage.ps1`
 - 打开 PowerToys 的 CmdPal（命令面板）
 - 进入扩展设置页面并打开 LinkSearch 扩展
 - 为扩展配置你喜欢的快捷键
@@ -87,7 +88,7 @@ curl --location 'https://rerank-api.provider.com/v1/rerank' \
 
 ## 路线图
 
-- [ ] Microsoft Store 上架
+- [ ] Microsoft Store 上架。MSIX 打包流程已准备好；正式提交 Store 仍需要在 Partner Center 关联应用身份。
 
 欢迎 Issue / PR！
 
