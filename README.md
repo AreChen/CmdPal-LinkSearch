@@ -2,6 +2,8 @@
 
 English | [简体中文](./README.zh.md)
 
+[Install from Microsoft Store](https://apps.microsoft.com/detail/9MZ9Q4CFP2N9)
+
 ![Setting](https://i.imgur.com/fcsbu0o.gif)
 
 [PowerToys CmdPal](https://github.com/microsoft/PowerToys) plugin to search and open your [Linkwarden](https://github.com/linkwarden/linkwarden) links quickly inside the command palette, with optional Rerank integration for better, semantic ordering.
@@ -12,9 +14,14 @@ English | [简体中文](./README.zh.md)
 ![Setting](https://i.imgur.com/eEM6ZtC.png)
 
 
+## Install
+
+- Install LinkSearch from the [Microsoft Store](https://apps.microsoft.com/detail/9MZ9Q4CFP2N9)
+- Make sure Microsoft PowerToys with Command Palette support is installed
+- Fallback: download the latest GitHub Release MSIX sideload package if you cannot use Microsoft Store
+
 ## Usage
-- Download the latest GitHub release and extract `LinkSearch_*_msix_test_packages.zip`
-- Open the package folder matching your CPU architecture, then run `Add-AppDevPackage.ps1` with PowerShell
+
 - Open PowerToys' CmdPal (Command Palette)
 - Go to the extension settings page and enable the LinkSearch extension
 - Configure your preferred shortcut key for the extension
@@ -84,7 +91,7 @@ curl --location 'https://rerank-api.provider.com/v1/rerank' \
 
 ## Roadmap
 
-- [ ] Microsoft Store publishing. The MSIX packaging pipeline is ready; final Store submission requires Partner Center app identity association.
+- [x] Microsoft Store publishing.
 
 Issues/PRs are welcome!
 

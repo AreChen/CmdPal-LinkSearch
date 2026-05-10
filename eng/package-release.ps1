@@ -208,9 +208,11 @@ finally {
 
 $readmePath = Join-Path $packagesRoot 'README-install.txt'
 Set-Content -LiteralPath $readmePath -Encoding UTF8 -Value @"
-LinkSearch $packageVersion test MSIX packages
+LinkSearch $packageVersion MSIX sideload packages
 
-These packages are for GitHub release sideload testing. They are signed with a temporary self-signed certificate generated at package time. Microsoft Store submissions will be re-signed by Microsoft after the app is associated with Partner Center.
+Recommended install: https://apps.microsoft.com/detail/9MZ9Q4CFP2N9
+
+These packages are provided as a manual sideload fallback for users who cannot install from Microsoft Store. They are signed with a temporary self-signed certificate generated at package time.
 
 Install:
 1. Extract the release zip.
@@ -222,7 +224,7 @@ Install:
 Requirement: Microsoft PowerToys with Command Palette support.
 "@
 
-$zipPath = Join-Path $outputRootPath "LinkSearch_${releaseVersion}_msix_test_packages.zip"
+$zipPath = Join-Path $outputRootPath "LinkSearch_${releaseVersion}_msix_sideload_packages.zip"
 Compress-Archive -Path (Join-Path $packagesRoot '*') -DestinationPath $zipPath -Force
 
 $hashPath = "$zipPath.sha256"

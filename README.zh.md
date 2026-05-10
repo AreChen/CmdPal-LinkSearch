@@ -2,6 +2,8 @@
 
 [English](./README.md) | 简体中文
 
+[从 Microsoft Store 安装](https://apps.microsoft.com/detail/9MZ9Q4CFP2N9)
+
 ![Setting](https://i.imgur.com/fcsbu0o.gif)
 
 [PowerToys CmdPal](https://github.com/microsoft/PowerToys) 插件：在命令面板中快速搜索与打开你的[Linkwarden](https://github.com/linkwarden/linkwarden)资源，并可选接入 Rerank 服务以获得更相关的排序结果。
@@ -16,9 +18,14 @@
 
 
 
+## 安装
+
+- 从 [Microsoft Store](https://apps.microsoft.com/detail/9MZ9Q4CFP2N9) 安装 LinkSearch
+- 确认已安装支持 Command Palette 的 Microsoft PowerToys
+- 备用方式：如果无法使用 Microsoft Store，可下载最新 GitHub Release 中的 MSIX 侧载包
+
 ## 使用
-- 下载最新 GitHub Release，并解压 `LinkSearch_*_msix_test_packages.zip`
-- 打开与你 CPU 架构匹配的安装包目录，然后用 PowerShell 运行 `Add-AppDevPackage.ps1`
+
 - 打开 PowerToys 的 CmdPal（命令面板）
 - 进入扩展设置页面并打开 LinkSearch 扩展
 - 为扩展配置你喜欢的快捷键
@@ -88,7 +95,7 @@ curl --location 'https://rerank-api.provider.com/v1/rerank' \
 
 ## 路线图
 
-- [ ] Microsoft Store 上架。MSIX 打包流程已准备好；正式提交 Store 仍需要在 Partner Center 关联应用身份。
+- [x] Microsoft Store 上架。
 
 欢迎 Issue / PR！
 
