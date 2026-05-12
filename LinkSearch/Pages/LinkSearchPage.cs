@@ -126,21 +126,28 @@ namespace LinkSearch
 
     internal sealed partial class LinkSearchPage : DynamicListPage, System.IDisposable
     {
+        private const int PreserveSelectionRefresh = -2;
+        private const int MinimumSearchQueryLength = 2;
+
         private List<IListItem> _allItems = new List<IListItem>();
         private string _currentQuery = string.Empty;
         private long _currentQueryVersion; // 查询版本号，用于验证查询有效性
-        private long _activeSearchVersion; // 标记搜索正在进行中
         private readonly SettingsManager _settingsManager;
         private readonly LinkwardenService _linkwardenService;
         private readonly RerankService _rerankService;
         private readonly RerankConnectionTestService _rerankConnectionTestService;
         private readonly SearchResultPresenter _presenter;
-        private System.Threading.CancellationTokenSource? _searchCancellationTokenSource;
+        private readonly object _searchDebounceLock = new object();
+        private System.Threading.Timer? _searchDebounceTimer;
+        private bool _hasScheduledSearch;
+        private long _scheduledSearchVersion;
+        private long _scheduledSearchDueTick;
+        private long _lastStartedSearchVersion;
+        private int _cachedSearchDelayMilliseconds;
         // 搜索延迟时间（毫秒）- 现在从设置中获取
         private int SearchDelayMilliseconds => _settingsManager.SearchDelayMilliseconds;
         private string _lastErrorMessage = string.Empty;
         private DateTime _lastErrorTime = DateTime.MinValue;
-        private readonly System.Threading.SemaphoreSlim _searchSemaphore = new System.Threading.SemaphoreSlim(1, 1);
         // 捕获 UI 同步上下文用于跨线程安全更新 Items（避免后台线程调用 RaiseItemsChanged 导致崩溃/快捷键异常）
         private readonly SynchronizationContext? _syncContext;
         public LinkSearchPage(
@@ -162,6 +169,7 @@ namespace LinkSearch
             Name = _settingsManager.Text(LocalizedTextKey.PageName);
             PlaceholderText = _settingsManager.Text(LocalizedTextKey.SearchPlaceholder);
             EmptyContent = _presenter.CreateEmptyResultItem();
+            _cachedSearchDelayMilliseconds = ReadSearchDelayMilliseconds();
             
             // 订阅设置变更事件
             _settingsManager.Settings.SettingsChanged += OnSettingsChanged;
@@ -188,39 +196,23 @@ namespace LinkSearch
 #if DEBUG
             Log.Debug("设置发生变更，重新加载当前搜索结果");
 #endif
+            _cachedSearchDelayMilliseconds = ReadSearchDelayMilliseconds();
             Name = _settingsManager.Text(LocalizedTextKey.PageName);
             PlaceholderText = _settingsManager.Text(LocalizedTextKey.SearchPlaceholder);
             EmptyContent = _presenter.CreateEmptyResultItem();
+            var queryVersion = Interlocked.Increment(ref _currentQueryVersion);
             
-            if (string.IsNullOrWhiteSpace(_currentQuery))
+            if (IsEmptyQuery(_currentQuery))
             {
+                StopDebouncedSearch();
                 _allItems = new List<IListItem> { _presenter.CreateEmptyQueryItem() };
                 RaiseItemsChangedOnUiThread();
             }
             else
             {
-                // 取消当前的延迟搜索，然后重新开始
-                var t = DebouncedUpdateItemsAsync(_currentQuery, _currentQueryVersion);
-                t.ContinueWith(tt =>
-                {
-                    if (tt.IsFaulted)
-                    {
-                        Log.Error($"DebouncedUpdateItemsAsync 未观察到的异常: {tt.Exception?.Flatten().Message}");
-                    }
-                }, TaskScheduler.Default);
+                // 重新安排防抖搜索；已发出的旧请求自然完成，结果会被版本号丢弃。
+                ScheduleDebouncedSearch(queryVersion);
             }
-        }
-        
-        /// <summary>
-        /// 根据延迟时间获取信号量超时时间
-        /// </summary>
-        /// <returns>信号量超时时间（毫秒）</returns>
-        private int GetSemaphoreTimeout()
-        {
-            // 将信号量超时时间设置为延迟时间的2-3倍
-            // 确保在延迟小于600ms时不会触发重复检索
-            // 最小超时时间从1000ms增加到1500ms，以适应新的最小延迟时间300ms
-            return Math.Max(SearchDelayMilliseconds * 3, 1500);
         }
         
         /// <summary>
@@ -261,59 +253,126 @@ namespace LinkSearch
         
         public override void UpdateSearchText(string oldSearch, string newSearch)
         {
-            // 立即更新当前查询和版本号
-            _currentQuery = newSearch;
+            var effectiveNewSearch = newSearch ?? string.Empty;
+            _currentQuery = effectiveNewSearch;
             var queryVersion = Interlocked.Increment(ref _currentQueryVersion);
-        
-            // 直接以 fire-and-forget 的方式调用异步方法，避免额外将工作项排到线程池导致短时大量 TP worker 创建
-            if (string.IsNullOrWhiteSpace(newSearch))
+
+            if (IsEmptyQuery(effectiveNewSearch))
             {
-                CancelCurrentSearch();
-                // 对于空查询，直接更新UI而不使用信号量（保留原先行为）
-                var t0 = UpdateItemsAsync(newSearch, queryVersion, System.Threading.CancellationToken.None);
-                t0.ContinueWith(tt =>
+                StopDebouncedSearch();
+                QueueEmptyQueryUpdate(queryVersion);
+                return;
+            }
+
+            ScheduleDebouncedSearch(queryVersion);
+        }
+
+        private void QueueEmptyQueryUpdate(long queryVersion)
+        {
+            ThreadPool.QueueUserWorkItem(static state =>
+            {
+                var item = ((LinkSearchPage Page, long QueryVersion))state!;
+                var task = item.Page.UpdateItemsAsync(string.Empty, item.QueryVersion, System.Threading.CancellationToken.None);
+                task.ContinueWith(tt =>
                 {
                     if (tt.IsFaulted)
                     {
                         Log.Error($"UpdateItemsAsync 未观察到的异常: {tt.Exception?.Flatten().Message}");
                     }
                 }, TaskScheduler.Default);
-                return;
-            }
-        
-            // 直接调用 DebouncedUpdateItemsAsync（异步方法会在必要时释放线程）
-            var t1 = DebouncedUpdateItemsAsync(newSearch, queryVersion);
-            t1.ContinueWith(tt =>
-            {
-                if (tt.IsFaulted)
-                {
-                    Log.Error($"DebouncedUpdateItemsAsync 未观察到的异常: {tt.Exception?.Flatten().Message}");
-                }
-            }, TaskScheduler.Default);
+            }, (this, queryVersion));
         }
-        
-        private void CancelCurrentSearch()
+
+        private static bool IsEmptyQuery(string query)
         {
-            var ctsToCancel = Interlocked.Exchange(ref _searchCancellationTokenSource, null);
-            if (ctsToCancel == null)
+            return string.IsNullOrWhiteSpace(query) || query.Trim().Length < MinimumSearchQueryLength;
+        }
+
+        private int ReadSearchDelayMilliseconds()
+        {
+            try
+            {
+                return SearchDelayMilliseconds;
+            }
+            catch (Exception)
+            {
+                return 600;
+            }
+        }
+
+        private void ScheduleDebouncedSearch(long queryVersion)
+        {
+            var delayMs = Volatile.Read(ref _cachedSearchDelayMilliseconds);
+
+            lock (_searchDebounceLock)
+            {
+                if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
+                {
+                    return;
+                }
+
+                _hasScheduledSearch = true;
+                _scheduledSearchVersion = queryVersion;
+                _scheduledSearchDueTick = Environment.TickCount64 + delayMs;
+                _searchDebounceTimer ??= new System.Threading.Timer(static state =>
+                {
+                    ((LinkSearchPage)state!).StartDebouncedSearch();
+                }, this, Timeout.Infinite, Timeout.Infinite);
+
+                _searchDebounceTimer.Change(delayMs, Timeout.Infinite);
+            }
+        }
+
+        private void StopDebouncedSearch()
+        {
+            lock (_searchDebounceLock)
+            {
+                _hasScheduledSearch = false;
+                _searchDebounceTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+        }
+
+        private void StartDebouncedSearch()
+        {
+            long queryVersion;
+
+            lock (_searchDebounceLock)
+            {
+                if (!_hasScheduledSearch)
+                {
+                    return;
+                }
+
+                var remainingMs = _scheduledSearchDueTick - Environment.TickCount64;
+                if (remainingMs > 0)
+                {
+                    _searchDebounceTimer?.Change((int)Math.Min(remainingMs, int.MaxValue), Timeout.Infinite);
+                    return;
+                }
+
+                _hasScheduledSearch = false;
+                queryVersion = _scheduledSearchVersion;
+            }
+
+            if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
             {
                 return;
             }
 
-            try
+            var query = _currentQuery;
+            if (IsEmptyQuery(query) || Interlocked.Exchange(ref _lastStartedSearchVersion, queryVersion) == queryVersion)
             {
-                if (!ctsToCancel.IsCancellationRequested)
+                return;
+            }
+
+            var task = ExecuteSearchAsync(query, queryVersion);
+            task.ContinueWith(tt =>
+            {
+                if (tt.IsFaulted)
                 {
-                    ctsToCancel.Cancel();
+                    Log.Error($"ExecuteSearchAsync 未观察到的异常: {tt.Exception?.Flatten().Message}");
                 }
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-            finally
-            {
-                ctsToCancel.Dispose();
-            }
+            }, TaskScheduler.Default);
         }
 
         private void RaiseItemsChangedOnUiThread()
@@ -324,14 +383,14 @@ namespace LinkSearch
                 {
                     _syncContext.Post(_ =>
                     {
-                        try { RaiseItemsChanged(0); }
+                        try { RaiseItemsChanged(PreserveSelectionRefresh); }
                         catch (Exception ex2) { Log.Error($"RaiseItemsChanged 调用失败: {ex2.Message}"); }
                     }, null);
                 }
                 else
                 {
-                    // 无法获取到 UI 同步上下文时退化为直接调用（记录日志以便后续审计）
-                    RaiseItemsChanged(0);
+                    // -2 matches CmdPal's incremental refresh mode, preserving selection during async result updates.
+                    RaiseItemsChanged(PreserveSelectionRefresh);
                 }
             }
             catch (Exception ex)
@@ -393,189 +452,41 @@ namespace LinkSearch
             }
         }
         
-        /// <summary>
-        /// 延迟搜索方法，实现防抖功能
-        /// </summary>
-        /// <param name="query">搜索查询</param>
-        /// <param name="queryVersion">查询版本号</param>
-        /// <returns>任务</returns>
-        private async System.Threading.Tasks.Task DebouncedUpdateItemsAsync(string query, long queryVersion)
+        private async System.Threading.Tasks.Task ExecuteSearchAsync(string query, long queryVersion)
         {
-            // 查询版本预验证：在创建CancellationTokenSource之前先验证查询版本
-            if (queryVersion != _currentQueryVersion)
+            // 查询版本预验证：过期查询不应发起网络请求。
+            if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
             {
 #if DEBUG
                 Log.Debug($"查询预验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
 #endif
                 return; // 查询已过期，取消搜索
             }
-            
-            // 创建新的CancellationTokenSource，使用更安全的管理方式
-            var localCancellationTokenSource = new System.Threading.CancellationTokenSource();
-            
-            // 使用原子操作设置新的CancellationTokenSource，并获取之前的
-            var previousCts = System.Threading.Interlocked.Exchange(ref _searchCancellationTokenSource, localCancellationTokenSource);
-            
-            // 安全地取消之前的搜索任务（如果存在）
-            if (previousCts != null)
-            {
-                try
-                {
-                    // 只有在之前的CancellationTokenSource未被取消时才取消
-                    if (!previousCts.IsCancellationRequested)
-                    {
-                        previousCts.Cancel();
-                    }
-                    previousCts.Dispose();
-                }
-                catch (ObjectDisposedException)
-                {
-                    // 对象已被释放，忽略异常
-                }
-            }
-            
-            bool semaphoreAcquired = false;
-            
+
             try
             {
-#if DEBUG
-                Log.Debug($"开始延迟搜索，查询: {query}, 版本: {queryVersion}");
-#endif
-                
-                // 在开始延迟前获取延迟时间，避免在延迟过程中访问属性导致异常
-                int delayMs;
-                try
+                if (IsEmptyQuery(query))
                 {
-                    delayMs = SearchDelayMilliseconds;
-#if DEBUG
-                    Log.Debug($"获取到延迟时间: {delayMs}ms");
-#endif
+                    return;
                 }
-                catch (Exception)
-                {
-#if DEBUG
-                    Log.Debug($"获取延迟时间时发生异常");
-                    Log.Debug($"使用默认延迟时间: 600ms");
-#endif
-                    delayMs = 600; // 使用默认值，从500ms增加到600ms
-                }
-                
-                // 再次验证查询版本，确保在获取延迟时间期间查询没有变化
-                if (queryVersion != _currentQueryVersion)
-                {
-#if DEBUG
-                    Log.Debug($"获取延迟时间后查询验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
-#endif
-                    return; // 查询已过期，取消搜索
-                }
-                
-                // 使用更安全的延迟方式，避免在Task.Delay执行过程中意外取消任务
-                try
-                {
-                    // 创建一个链接的CancellationToken，结合本地取消令牌和全局取消令牌
-                    using var linkedCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(
-                        localCancellationTokenSource.Token);
-                    
-                    // 等待指定的延迟时间
-                    await System.Threading.Tasks.Task.Delay(delayMs, linkedCts.Token);
-                }
-                catch (System.Threading.Tasks.TaskCanceledException)
-                {
-#if DEBUG
-                    Log.Debug($"延迟期间任务被取消，查询: {query}, 版本: {queryVersion}");
-#endif
-                    return; // 延迟期间被取消，直接返回
-                }
-                
-#if DEBUG
-                Log.Debug($"延迟结束，检查查询有效性");
-#endif
-                // 延迟后再次验证查询版本是否仍然有效（查询有效性验证）
-                if (queryVersion != _currentQueryVersion)
+
+                if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
                 {
 #if DEBUG
                     Log.Debug($"查询已过期，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
 #endif
                     return; // 查询已过期，取消搜索
                 }
-                
-                // 延迟结束后才获取信号量，确保信号量只在需要执行搜索时才被占用
-                int semaphoreTimeout;
-                try
-                {
-                    semaphoreTimeout = GetSemaphoreTimeout();
+
 #if DEBUG
-                    Log.Debug($"获取到信号量超时时间: {semaphoreTimeout}ms");
+                Log.Debug($"执行搜索，查询: {query}, 版本: {queryVersion}");
 #endif
-                }
-                catch (Exception)
-                {
-#if DEBUG
-                    Log.Debug($"获取信号量超时时间时发生异常");
-                    Log.Debug($"使用默认信号量超时时间: 1800ms");
-#endif
-                    semaphoreTimeout = 1800; // 使用默认值，从1500ms增加到1800ms
-                }
-                
-                semaphoreAcquired = await _searchSemaphore.WaitAsync(TimeSpan.FromMilliseconds(semaphoreTimeout));
-                
-                if (!semaphoreAcquired)
-                {
-#if DEBUG
-                    Log.Debug($"信号量获取超时，跳过搜索: {query}");
-#endif
-                    return;
-                }
-                
-                // 使用原子操作确保同一时间只有一个搜索任务在执行
-                long expectedActiveVersion = 0;
-                if (System.Threading.Interlocked.CompareExchange(ref _activeSearchVersion, queryVersion, expectedActiveVersion) != expectedActiveVersion)
-                {
-#if DEBUG
-                    Log.Debug($"已有其他搜索任务正在执行，当前活动版本: {_activeSearchVersion}, 请求版本: {queryVersion}");
-#endif
-                    return;
-                }
-                
-                // 验证当前CancellationTokenSource是否仍然有效
-                if (localCancellationTokenSource != _searchCancellationTokenSource || localCancellationTokenSource.Token.IsCancellationRequested)
-                {
-#if DEBUG
-                    Log.Debug($"CancellationTokenSource已失效或任务被取消，查询: {query}, 版本: {queryVersion}");
-                    Log.Debug($"本地CTS与全局CTS相同: {localCancellationTokenSource == _searchCancellationTokenSource}");
-                    Log.Debug($"本地CTS取消状态: {localCancellationTokenSource.Token.IsCancellationRequested}");
-#endif
-                    // 重置活动搜索版本
-                    System.Threading.Interlocked.Exchange(ref _activeSearchVersion, 0);
-                    return;
-                }
-                
-                // 再次验证查询版本，确保在获取信号量期间查询没有变化
-                if (queryVersion != _currentQueryVersion)
-                {
-#if DEBUG
-                    Log.Debug($"获取信号量后查询验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
-#endif
-                    // 重置活动搜索版本
-                    System.Threading.Interlocked.Exchange(ref _activeSearchVersion, 0);
-                    return;
-                }
-                
-                // 如果任务没有被取消，则执行搜索
-                if (!localCancellationTokenSource.Token.IsCancellationRequested)
-                {
-#if DEBUG
-                    Log.Debug($"执行搜索，查询: {_currentQuery}, 版本: {queryVersion}");
-#endif
-                    // 使用_currentQuery而不是参数query，确保使用最新的查询字符串
-                    await UpdateItemsAsync(_currentQuery, queryVersion, localCancellationTokenSource.Token).ConfigureAwait(false);
-                }
+                await UpdateItemsAsync(query, queryVersion, System.Threading.CancellationToken.None).ConfigureAwait(false);
             }
-            catch (System.Threading.Tasks.TaskCanceledException)
+            catch (OperationCanceledException)
             {
 #if DEBUG
                 Log.Debug($"搜索任务被取消，查询: {query}, 版本: {queryVersion}");
-                Log.Debug($"CancellationToken状态: {localCancellationTokenSource?.Token.IsCancellationRequested ?? true}");
                 Log.Debug($"查询版本是否匹配: {queryVersion == _currentQueryVersion}");
 #endif
                 // 任务被取消，这是正常情况，不需要处理
@@ -591,74 +502,9 @@ namespace LinkSearch
             {
 #if DEBUG
                 Log.Debug($"搜索任务发生异常，查询: {query}, 版本: {queryVersion}");
-                Log.Debug($"CancellationToken状态: {localCancellationTokenSource?.Token.IsCancellationRequested ?? true}");
                 Log.Debug($"查询版本是否匹配: {queryVersion == _currentQueryVersion}");
 #endif
                 // 记录其他异常
-            }
-            finally
-            {
-                // 重置活动搜索版本
-                System.Threading.Interlocked.Exchange(ref _activeSearchVersion, 0);
-                
-                // 更安全的资源清理方式
-                try
-                {
-                    // 只有当本地引用与实例引用相同时才释放全局引用
-                    if (localCancellationTokenSource == _searchCancellationTokenSource)
-                    {
-                        var ctsToDispose = System.Threading.Interlocked.Exchange(ref _searchCancellationTokenSource, null);
-                        if (ctsToDispose != null && !ctsToDispose.IsCancellationRequested)
-                        {
-                            ctsToDispose.Cancel();
-                        }
-                        ctsToDispose?.Dispose();
-                    }
-                    else if (localCancellationTokenSource != null)
-                    {
-                        // 如果本地引用不是全局引用，则只释放本地引用
-                        if (!localCancellationTokenSource.IsCancellationRequested)
-                        {
-                            localCancellationTokenSource.Cancel();
-                        }
-                        localCancellationTokenSource.Dispose();
-                    }
-                }
-                catch (ObjectDisposedException)
-                {
-                    // 对象已被释放，忽略异常
-                }
-                catch (Exception)
-                {
-#if DEBUG
-                    Log.Debug($"清理CancellationTokenSource时发生异常");
-#endif
-                    // 记录清理异常，但不影响主流程
-                }
-                
-                // 释放信号量 - 只有在获取了信号量的情况下才释放
-                if (semaphoreAcquired)
-                {
-                    try
-                    {
-                        _searchSemaphore.Release();
-#if DEBUG
-                        Log.Debug($"信号量已释放，查询: {query}, 版本: {queryVersion}");
-#endif
-                    }
-                    catch (ObjectDisposedException)
-                    {
-                        // 信号量已被释放，忽略异常
-                    }
-                    catch (System.Threading.SemaphoreFullException)
-                    {
-                        // 信号量已满，忽略异常
-                    }
-                }
-                
-#if DEBUG
-                Log.Debug($"搜索任务清理完成，查询: {query}, 版本: {queryVersion}");
-#endif
             }
         }
         
@@ -666,7 +512,7 @@ namespace LinkSearch
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(query))
+                if (IsEmptyQuery(query))
                 {
                     return new List<IListItem> { _presenter.CreateEmptyQueryItem() };
                 }
@@ -683,7 +529,8 @@ namespace LinkSearch
                     links = await _rerankService.RerankLinksAsync(query, links, cancellationToken).ConfigureAwait(false);
                 }
 
-                return new List<IListItem>(_presenter.CreateResultItems(links));
+                var resultItems = new List<IListItem>(_presenter.CreateResultItems(links));
+                return resultItems;
             }
             catch (OperationCanceledException)
             {
@@ -707,22 +554,17 @@ namespace LinkSearch
         /// </summary>
         public void Dispose()
         {
-            // 取消并释放搜索任务
-            if (_searchCancellationTokenSource != null)
+            lock (_searchDebounceLock)
             {
-                _searchCancellationTokenSource.Cancel();
-                _searchCancellationTokenSource.Dispose();
-                _searchCancellationTokenSource = null;
+                _searchDebounceTimer?.Dispose();
+                _searchDebounceTimer = null;
             }
-            
+
             // 取消订阅设置变更事件
             if (_settingsManager != null)
             {
                 _settingsManager.Settings.SettingsChanged -= OnSettingsChanged;
             }
-            
-            // 释放信号量资源
-            _searchSemaphore.Dispose();
         }
     }
 }
