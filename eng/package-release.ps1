@@ -151,7 +151,7 @@ try {
         $platform = $settings.Platform
         $runtimeIdentifier = $settings.RuntimeIdentifier
         $packageSuffix = $settings.PackageSuffix
-        $targetFramework = 'net9.0-windows10.0.22621.0'
+        $targetFramework = 'net10.0-windows10.0.22621.0'
         $appPackagesRoot = Join-Path $repoRoot "LinkSearch\bin\$platform\$Configuration\$targetFramework\$runtimeIdentifier\AppPackages"
 
         if (Test-Path -LiteralPath $appPackagesRoot) {

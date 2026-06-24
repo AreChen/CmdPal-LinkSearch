@@ -11,7 +11,7 @@
   <Identity
     Name="ARECHEN.LinkSearch"
     Publisher="CN=C22D2DCB-8681-4F32-8038-5AD3E541CDDE"
-    Version="0.1.4.0" />
+    Version="0.1.5.0" />
   <!-- Store identity reserved in Partner Center. -->
 
   <Properties>
