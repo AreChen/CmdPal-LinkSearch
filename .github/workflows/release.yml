@@ -17,6 +17,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate release metadata
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          [xml]$manifest = Get-Content LinkSearch/Package.appxmanifest -Raw
+          $version = [version]$manifest.Package.Identity.Version
+          $expectedTag = "v$($version.Major).$($version.Minor).$($version.Build)"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version $version."
+          }
+          $notesPath = "docs/releases/$env:GITHUB_REF_NAME.md"
+          if (-not (Test-Path -LiteralPath $notesPath) -or
+              [string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $notesPath -Raw))) {
+            throw "Missing release notes: $notesPath"
+          }
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -41,16 +57,4 @@ jobs:
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: artifacts/release/*
-          body: |
-            LinkSearch release package.
-
-            Recommended install:
-            - Microsoft Store: https://apps.microsoft.com/detail/9MZ9Q4CFP2N9
-
-            Sideload package requirements:
-            - Microsoft PowerToys with Command Palette support.
-            - Run the included `Add-AppDevPackage.ps1` from the package folder matching your CPU architecture.
-
-            Notes:
-            - Microsoft Store is the recommended installation channel.
-            - The attached MSIX package is provided as a manual sideload fallback and is signed with a temporary self-signed certificate generated at package time.
+          body_path: docs/releases/${{ github.ref_name }}.md
