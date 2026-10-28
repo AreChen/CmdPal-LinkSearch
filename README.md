@@ -36,22 +36,22 @@
 <table>
   <tr>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:search.svg?color=%230078D4" width="32" alt="Search icon" />
+      <img src="./docs/assets/icons/search.svg" width="32" alt="Search icon" />
       <h3>Fast Search</h3>
       <p>Search Linkwarden collections directly from PowerToys Command Palette.</p>
     </td>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:external-link.svg?color=%230078D4" width="32" alt="Open link icon" />
+      <img src="./docs/assets/icons/external-link.svg" width="32" alt="Open link icon" />
       <h3>Quick Open</h3>
       <p>Open saved pages from search results without switching context.</p>
     </td>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:sparkles.svg?color=%230078D4" width="32" alt="Rerank icon" />
+      <img src="./docs/assets/icons/sparkles.svg" width="32" alt="Rerank icon" />
       <h3>Optional Rerank</h3>
       <p>Use a rerank API or decision model for semantic ordering.</p>
     </td>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:languages.svg?color=%230078D4" width="32" alt="Language icon" />
+      <img src="./docs/assets/icons/languages.svg" width="32" alt="Language icon" />
       <h3>Bilingual UI</h3>
       <p>Use Auto, Simplified Chinese, or English from extension settings.</p>
     </td>
@@ -85,7 +85,7 @@ Enable reranking in the settings and choose one of these modes:
 - **Decision model: Noul**: use a System One endpoint to assess each candidate independently.
 - **Decision model: Choice**: compare all candidates with a System One endpoint and order them by relative probability.
 
-For decision modes, configure the full System One endpoint (for example, `https://decision.example.com/v1/systemone`), API key, and model name (for example, `Eapil-D1`) separately. The service must support the selected `noul` or `choice` question type. You can also set `LINKSEARCH_DECISION_API_URL`, `LINKSEARCH_DECISION_API_KEY`, and `LINKSEARCH_DECISION_MODEL_NAME` as environment variables; values entered in the extension settings take precedence.
+For decision modes, configure the full System One endpoint (for example, `https://decision.example.com/v1/systemone`), API key, and model name (for example, `typesafe/jev-1.13`) separately. The service must offer the chosen model and support the selected `noul` or `choice` question type. You can also set `LINKSEARCH_DECISION_API_URL`, `LINKSEARCH_DECISION_API_KEY`, and `LINKSEARCH_DECISION_MODEL_NAME` as environment variables; values entered in the extension settings take precedence.
 
 Ranking sends the query and each candidate's title, description, and tags, not the separate URL or collection fields. Titles, descriptions, or tags may themselves contain sensitive information. If the request fails or the decision response is incomplete, the original search order is retained. Choice compares all candidates in one request; probabilities from separate batches are not combined, and a large candidate set may exceed the service's limits.
 
@@ -155,7 +155,7 @@ Response example:
 ### Configuration
 
 1. Install LinkSearch 0.1.8 or later, enable reranking, and select **Decision model: per item (Noul)** or **Decision model: candidate choice (Choice)**.
-2. Enter the full decision endpoint, its API key, and its model name in the three decision-model settings. For example: `https://decision.example.com/v1/systemone`, your service's key, and `Eapil-D1`. The hostname, endpoint path, and model name depend on your provider.
+2. Enter the full decision endpoint, its API key, and its model name in the three decision-model settings. For example: `https://decision.example.com/v1/systemone`, your service's key, and `typesafe/jev-1.13`. The hostname is illustrative; use the endpoint and model name offered by your provider.
 3. Save the settings and search for a term that returns at least two results. Check the decision service's request logs to confirm that the expected model was called. The separate Rerank API fields are not used in decision modes.
 
 LinkSearch sends a `POST` with `Authorization: Bearer <API key>` and `Content-Type: application/json`. The examples below use fictional bookmarks and show the fields required by LinkSearch. The service may return metadata at the root or inside answer objects, but `answers` must contain exactly the requested question IDs. Replace the URL and model with values from your provider. The curl example reads the key from `LINKSEARCH_DECISION_API_KEY`; do not commit real API keys.
@@ -169,7 +169,7 @@ curl --request POST 'https://decision.example.com/v1/systemone' \
   --header "Authorization: Bearer $LINKSEARCH_DECISION_API_KEY" \
   --header 'Content-Type: application/json' \
   --data '{
-    "model": "Eapil-D1",
+    "model": "typesafe/jev-1.13",
     "state": "python packaging",
     "questions": {
       "rel_0": {
@@ -204,7 +204,7 @@ Choice sends one question with all candidates as `criteria`. Send this JSON body
 
 ```json
 {
-  "model": "Eapil-D1",
+  "model": "typesafe/jev-1.13",
   "state": "python packaging",
   "questions": {
     "rank": {

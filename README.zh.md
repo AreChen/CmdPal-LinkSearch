@@ -36,22 +36,22 @@
 <table>
   <tr>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:search.svg?color=%230078D4" width="32" alt="搜索图标" />
+      <img src="./docs/assets/icons/search.svg" width="32" alt="搜索图标" />
       <h3>快速检索</h3>
       <p>直接在 PowerToys Command Palette 中搜索 Linkwarden 收藏。</p>
     </td>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:external-link.svg?color=%230078D4" width="32" alt="打开链接图标" />
+      <img src="./docs/assets/icons/external-link.svg" width="32" alt="打开链接图标" />
       <h3>快速打开</h3>
       <p>从搜索结果直接打开保存的网页，减少上下文切换。</p>
     </td>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:sparkles.svg?color=%230078D4" width="32" alt="重排图标" />
+      <img src="./docs/assets/icons/sparkles.svg" width="32" alt="重排图标" />
       <h3>可选重排</h3>
       <p>使用 Rerank API 或决策模型，按语义相关性重新排序。</p>
     </td>
     <td width="25%" valign="top">
-      <img src="https://api.iconify.design/lucide:languages.svg?color=%230078D4" width="32" alt="语言图标" />
+      <img src="./docs/assets/icons/languages.svg" width="32" alt="语言图标" />
       <h3>双语界面</h3>
       <p>可在扩展设置中选择自动、简体中文或 English。</p>
     </td>
@@ -85,7 +85,7 @@
 - **决策模型：逐项判断 (Noul)**：通过 System One 接口分别判断每个候选的相关性。
 - **决策模型：候选选择 (Choice)**：通过 System One 接口比较所有候选，按返回的相对概率排序。
 
-决策模型需单独设置完整的 System One 地址（例如 `https://decision.example.com/v1/systemone`）、API 密钥和模型名称（例如 `Eapil-D1`）。服务必须支持所选的 `noul` 或 `choice` 问题类型。也可使用环境变量 `LINKSEARCH_DECISION_API_URL`、`LINKSEARCH_DECISION_API_KEY` 和 `LINKSEARCH_DECISION_MODEL_NAME`；扩展设置中填写的值优先。
+决策模型需单独设置完整的 System One 地址（例如 `https://decision.example.com/v1/systemone`）、API 密钥和模型名称（例如 `typesafe/jev-1.13`）。服务必须提供所选模型，并支持所选的 `noul` 或 `choice` 问题类型。也可使用环境变量 `LINKSEARCH_DECISION_API_URL`、`LINKSEARCH_DECISION_API_KEY` 和 `LINKSEARCH_DECISION_MODEL_NAME`；扩展设置中填写的值优先。
 
 重排序时只发送搜索词以及候选的标题、描述、标签，不发送独立的链接地址和收藏夹字段；标题、描述或标签本身仍可能包含敏感内容。请求失败或决策响应不完整时，保留原始搜索顺序。Choice 一次比较全部候选，不会合并不同批次的概率；候选过多可能超过服务限制。
 
@@ -155,7 +155,7 @@ curl --location 'https://rerank-api.provider.com/v1/rerank' \
 ### 配置方式
 
 1. 安装 LinkSearch 0.1.8 或更新版本，启用重排序，选择 **决策模型：逐项判断 (Noul)** 或 **决策模型：候选选择 (Choice)**。
-2. 在三个决策模型设置项中分别填写完整接口地址、API 密钥和模型名称。例如：`https://decision.example.com/v1/systemone`、服务的密钥和 `Eapil-D1`。实际域名、接口路径和模型名称以服务提供方为准。
+2. 在三个决策模型设置项中分别填写完整接口地址、API 密钥和模型名称。例如：`https://decision.example.com/v1/systemone`、服务的密钥和 `typesafe/jev-1.13`。示例域名仅用于说明，实际接口地址和模型名称以服务提供方为准。
 3. 保存设置，搜索至少返回两条结果的关键词，并在决策服务后台检查是否调用了预期模型。选择决策模式时，不使用上面的 Rerank API 地址、密钥和模型名称。
 
 LinkSearch 使用 `POST` 请求，携带 `Authorization: Bearer <API 密钥>` 和 `Content-Type: application/json`。下面使用虚构书签展示扩展所需的字段。服务可以在响应根部或每个回答中返回其他元数据，但 `answers` 必须与请求的问题标识完全对应。请替换示例中的地址和模型名；curl 示例从环境变量 `LINKSEARCH_DECISION_API_KEY` 读取密钥，不要将真实 API 密钥提交到仓库。
@@ -169,7 +169,7 @@ curl --request POST 'https://decision.example.com/v1/systemone' \
   --header "Authorization: Bearer $LINKSEARCH_DECISION_API_KEY" \
   --header 'Content-Type: application/json' \
   --data '{
-    "model": "Eapil-D1",
+    "model": "typesafe/jev-1.13",
     "state": "python packaging",
     "questions": {
       "rel_0": {
@@ -204,7 +204,7 @@ Choice 将所有候选放入一个问题的 `criteria`。使用相同的接口�
 
 ```json
 {
-  "model": "Eapil-D1",
+  "model": "typesafe/jev-1.13",
   "state": "python packaging",
   "questions": {
     "rank": {
