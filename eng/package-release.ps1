@@ -172,7 +172,8 @@ try {
             '/p:PublishReadyToRun=true',
             '/p:GenerateAppxPackageOnBuild=true',
             '/p:UapAppxPackageBuildMode=SideloadOnly',
-            '/p:AppxBundle=Never'
+            '/p:AppxBundle=Never',
+            "/p:AppxPackageDir=$appPackagesRoot\"
         )
 
         $msix = Get-ChildItem -LiteralPath $appPackagesRoot -Recurse -Filter '*.msix' |
