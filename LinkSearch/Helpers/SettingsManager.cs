@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using LinkSearch.Localization;
+using LinkSearch.Models;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
 namespace LinkSearch.Helpers;
@@ -49,6 +50,18 @@ public class SettingsManager : JsonSettingsManager
         "Reorder search results using rerank",
         false);
 
+    private readonly ChoiceSetSetting _rankingMode = new(
+        Namespaced(nameof(RankingMode)),
+        new List<ChoiceSetSetting.Choice>
+        {
+            new("rerank", "Rerank API"),
+            new("decision-noul", "Decision model: per item (Noul)"),
+            new("decision-choice", "Decision model: candidate choice (Choice)"),
+        })
+    {
+        Value = "rerank",
+    };
+
     private readonly TextSetting _rerankApiUrl = new(
         Namespaced(nameof(RerankApiUrl)),
         "Rerank API URL",
@@ -66,6 +79,15 @@ public class SettingsManager : JsonSettingsManager
         "Rerank Model Name",
         "Model name used for rerank",
         "BAAI/bge-reranker-v2-m3");
+
+    private readonly TextSetting _decisionApiUrl = new(
+        Namespaced(nameof(DecisionApiUrl)), "Decision API URL", "System One endpoint URL", string.Empty);
+
+    private readonly TextSetting _decisionApiKey = new(
+        Namespaced(nameof(DecisionApiKey)), "Decision API Key", "Decision service API key", string.Empty);
+
+    private readonly TextSetting _decisionModelName = new(
+        Namespaced(nameof(DecisionModelName)), "Decision Model Name", "Decision model name", string.Empty);
 
     private readonly TextSetting _searchDelayMilliseconds = new(
         Namespaced(nameof(SearchDelayMilliseconds)),
@@ -174,6 +196,35 @@ public class SettingsManager : JsonSettingsManager
             return false;
         }
     }
+
+    internal RankingMode RankingMode => _rankingMode.Value switch
+    {
+        "decision-noul" => RankingMode.DecisionNoul,
+        "decision-choice" => RankingMode.DecisionChoice,
+        _ => RankingMode.Rerank,
+    };
+
+    internal string DecisionApiUrl
+    {
+        get
+        {
+            var value = _decisionApiUrl.Value;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                value = Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_API_URL");
+            }
+
+            return string.IsNullOrWhiteSpace(value) ? string.Empty : ValidateAndFormatUrl(value);
+        }
+    }
+
+    internal string DecisionApiKey => !string.IsNullOrWhiteSpace(_decisionApiKey.Value)
+        ? _decisionApiKey.Value
+        : Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_API_KEY") ?? string.Empty;
+
+    internal string DecisionModelName => !string.IsNullOrWhiteSpace(_decisionModelName.Value)
+        ? _decisionModelName.Value
+        : Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_MODEL_NAME") ?? string.Empty;
 
     public string RerankApiUrl
     {
@@ -442,9 +493,13 @@ public class SettingsManager : JsonSettingsManager
         Settings.Add(_linkwardenBaseUrl);
         Settings.Add(_linkwardenApiKey);
         Settings.Add(_enableRerank);
+        Settings.Add(_rankingMode);
         Settings.Add(_rerankApiUrl);
         Settings.Add(_rerankApiKey);
         Settings.Add(_rerankModelName);
+        Settings.Add(_decisionApiUrl);
+        Settings.Add(_decisionApiKey);
+        Settings.Add(_decisionModelName);
         Settings.Add(_searchDelayMilliseconds);
         Settings.Add(_maxResults);
 
@@ -469,6 +524,30 @@ public class SettingsManager : JsonSettingsManager
 
     internal void SetForTest(string key, string value)
     {
+        if (key == _rankingMode.Key)
+        {
+            _rankingMode.Value = value;
+            return;
+        }
+
+        if (key == _decisionApiUrl.Key)
+        {
+            _decisionApiUrl.Value = value;
+            return;
+        }
+
+        if (key == _decisionApiKey.Key)
+        {
+            _decisionApiKey.Value = value;
+            return;
+        }
+
+        if (key == _decisionModelName.Key)
+        {
+            _decisionModelName.Value = value;
+            return;
+        }
+
         if (key == _linkwardenBaseUrl.Key)
         {
             _linkwardenBaseUrl.Value = value;
@@ -530,9 +609,13 @@ public class SettingsManager : JsonSettingsManager
             _ when key == _linkwardenBaseUrl.Key => _linkwardenBaseUrl,
             _ when key == _linkwardenApiKey.Key => _linkwardenApiKey,
             _ when key == _enableRerank.Key => _enableRerank,
+            _ when key == _rankingMode.Key => _rankingMode,
             _ when key == _rerankApiUrl.Key => _rerankApiUrl,
             _ when key == _rerankApiKey.Key => _rerankApiKey,
             _ when key == _rerankModelName.Key => _rerankModelName,
+            _ when key == _decisionApiUrl.Key => _decisionApiUrl,
+            _ when key == _decisionApiKey.Key => _decisionApiKey,
+            _ when key == _decisionModelName.Key => _decisionModelName,
             _ when key == _searchDelayMilliseconds.Key => _searchDelayMilliseconds,
             _ when key == _maxResults.Key => _maxResults,
             _ => null,
@@ -555,12 +638,23 @@ public class SettingsManager : JsonSettingsManager
         _linkwardenApiKey.Description = Text(LocalizedTextKey.LinkwardenApiKeyDescription);
         _enableRerank.Label = Text(LocalizedTextKey.EnableRerankLabel);
         _enableRerank.Description = Text(LocalizedTextKey.EnableRerankDescription);
+        _rankingMode.Label = Text(LocalizedTextKey.RankingModeLabel);
+        _rankingMode.Description = Text(LocalizedTextKey.RankingModeDescription);
+        _rankingMode.Choices[0].Title = Text(LocalizedTextKey.RankingModeRerank);
+        _rankingMode.Choices[1].Title = Text(LocalizedTextKey.RankingModeDecisionNoul);
+        _rankingMode.Choices[2].Title = Text(LocalizedTextKey.RankingModeDecisionChoice);
         _rerankApiUrl.Label = Text(LocalizedTextKey.RerankApiUrlLabel);
         _rerankApiUrl.Description = Text(LocalizedTextKey.RerankApiUrlDescription);
         _rerankApiKey.Label = Text(LocalizedTextKey.RerankApiKeyLabel);
         _rerankApiKey.Description = Text(LocalizedTextKey.RerankApiKeyDescription);
         _rerankModelName.Label = Text(LocalizedTextKey.RerankModelNameLabel);
         _rerankModelName.Description = Text(LocalizedTextKey.RerankModelNameDescription);
+        _decisionApiUrl.Label = Text(LocalizedTextKey.DecisionApiUrlLabel);
+        _decisionApiUrl.Description = Text(LocalizedTextKey.DecisionApiUrlDescription);
+        _decisionApiKey.Label = Text(LocalizedTextKey.DecisionApiKeyLabel);
+        _decisionApiKey.Description = Text(LocalizedTextKey.DecisionApiKeyDescription);
+        _decisionModelName.Label = Text(LocalizedTextKey.DecisionModelNameLabel);
+        _decisionModelName.Description = Text(LocalizedTextKey.DecisionModelNameDescription);
         _searchDelayMilliseconds.Label = Text(LocalizedTextKey.SearchDelayLabel);
         _searchDelayMilliseconds.Description = Text(LocalizedTextKey.SearchDelayDescription);
         _maxResults.Label = Text(LocalizedTextKey.MaxResultsLabel);

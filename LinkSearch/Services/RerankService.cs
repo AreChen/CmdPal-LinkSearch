@@ -35,16 +35,14 @@ namespace LinkSearch.Services
         /// </summary>
         /// <param name="settingsManager">设置管理器</param>
         public RerankService(SettingsManager settingsManager)
+            : this(settingsManager, HttpClientProvider.Shared)
         {
- // #if DEBUG
- //             // 调试日志：验证构造函数被调用
- //             Log.Debug("RerankService 构造函数被调用");
- // #endif
-             
+        }
+
+        internal RerankService(SettingsManager settingsManager, HttpClient httpClient)
+        {
             _settingsManager = settingsManager ?? throw new ArgumentNullException(nameof(settingsManager));
-            // 使用 Helpers 中的共享 HttpClient 实例
-            _httpClient = HttpClientProvider.Shared;
-            // 使用静态 JsonSerializerOptions，避免每次构造
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         }
 
         /// <summary>
@@ -63,13 +61,16 @@ namespace LinkSearch.Services
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (items.Count == 0 || !_settingsManager.EnableRerank)
+            if (items.Count < 2 || !_settingsManager.EnableRerank)
             {
                 return items;
             }
 
-            var apiKey = _settingsManager.RerankApiKey;
-            if (string.IsNullOrWhiteSpace(apiKey))
+            var mode = _settingsManager.RankingMode;
+            var apiKey = mode == RankingMode.Rerank ? _settingsManager.RerankApiKey : _settingsManager.DecisionApiKey;
+            var apiUrl = mode == RankingMode.Rerank ? _settingsManager.RerankApiUrl : _settingsManager.DecisionApiUrl;
+            var model = mode == RankingMode.Rerank ? _settingsManager.RerankModelName : _settingsManager.DecisionModelName;
+            if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(model))
             {
                 return items;
             }
@@ -82,8 +83,18 @@ namespace LinkSearch.Services
                     documents[i] = buildDocument(items[i]);
                 }
 
-                var rerankRequest = RerankRequest.Create(query, documents, _settingsManager.RerankModelName, documents.Length, false, true);
-                var rerankResponse = await CallRerankApiAsync(rerankRequest, apiKey, cancellationToken).ConfigureAwait(false);
+                RerankResponse? rerankResponse;
+                if (mode == RankingMode.Rerank)
+                {
+                    var rerankRequest = RerankRequest.Create(query, documents, model, documents.Length, false, true);
+                    rerankResponse = await CallRerankApiAsync(rerankRequest, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var bytes = DecisionRanking.CreateRequest(mode, model, query, documents);
+                    rerankResponse = await CallDecisionApiAsync(bytes, mode, documents.Length, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
+                }
+
                 return ApplyRerankOrder(items, rerankResponse);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -102,10 +113,35 @@ namespace LinkSearch.Services
             var sb = new StringBuilder(256);
             sb.Append("Name: ").AppendLine(link.Name);
             sb.Append("Description: ").AppendLine(link.Description);
-            sb.Append("URL: ").AppendLine(link.Url);
             sb.Append("Tags: ").AppendLine(string.Join(", ", link.Tags));
-            sb.Append("Collection: ").AppendLine(link.Collection);
             return sb.ToString();
+        }
+
+        private async Task<RerankResponse?> CallDecisionApiAsync(byte[] body, RankingMode mode, int documentCount, string apiUrl, string apiKey, CancellationToken cancellationToken)
+        {
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _serviceCts.Token);
+            using var request = new HttpRequestMessage(HttpMethod.Post, apiUrl);
+            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            request.Content = new ByteArrayContent(body);
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linkedCts.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                Log.Debug($"Decision API request failed with HTTP {(int)response.StatusCode}");
+                return null;
+            }
+
+            await using var responseStream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
+            using var json = await JsonDocument.ParseAsync(responseStream, cancellationToken: linkedCts.Token).ConfigureAwait(false);
+            if (!DecisionRanking.TryParseResponse(json.RootElement, mode, documentCount, out var result))
+            {
+                Log.Debug("Decision API returned an invalid response");
+                return null;
+            }
+
+            return result;
         }
 
         internal static IReadOnlyList<T> ApplyRerankOrder<T>(IReadOnlyList<T> links, RerankResponse? response)
@@ -149,13 +185,12 @@ namespace LinkSearch.Services
         /// <returns>rerank响应</returns>
         [UnconditionalSuppressMessage("Trimming", "IL2026")]
         [UnconditionalSuppressMessage("AOT", "IL3050")]
-        private async Task<RerankResponse?> CallRerankApiAsync(RerankRequest request, string apiKey, CancellationToken cancellationToken = default)
+        private async Task<RerankResponse?> CallRerankApiAsync(RerankRequest request, string apiUrl, string apiKey, CancellationToken cancellationToken = default)
         {
 #if DEBUG
             Log.Debug("开始调用rerank API");
 #endif
             
-            var apiUrl = _settingsManager.RerankApiUrl;
             if (string.IsNullOrWhiteSpace(apiUrl))
             {
 #if DEBUG
@@ -182,7 +217,7 @@ namespace LinkSearch.Services
                 content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
                 // 为每个请求创建 HttpRequestMessage，避免修改共享 HttpClient.DefaultRequestHeaders 导致并发竞态
-                var requestMessage = new HttpRequestMessage(HttpMethod.Post, apiUrl)
+                using var requestMessage = new HttpRequestMessage(HttpMethod.Post, apiUrl)
                 {
                     Content = content
                 };

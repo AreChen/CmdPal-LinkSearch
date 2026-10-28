@@ -19,7 +19,11 @@ namespace LinkSearch.Services
     /// </summary>
     internal sealed partial class RerankConnectionTestService : IDisposable
     {
-        private static readonly string[] TestDocuments = new[] { "This is a test document for connection testing." };
+        private static readonly string[] TestDocuments = new[]
+        {
+            "Name: Test bookmark\nDescription: A document for connection testing.\nTags: test",
+            "Name: Other bookmark\nDescription: An unrelated document.\nTags: other",
+        };
         
         private readonly SettingsManager _settingsManager;
         private readonly HttpClient _httpClient;
@@ -36,16 +40,14 @@ namespace LinkSearch.Services
         /// </summary>
         /// <param name="settingsManager">设置管理器</param>
         public RerankConnectionTestService(SettingsManager settingsManager)
+            : this(settingsManager, HttpClientProvider.Shared)
         {
- // #if DEBUG
- //             // 调试日志：验证构造函数被调用
- //             Log.Debug("RerankConnectionTestService 构造函数被调用");
- // #endif
-             
+        }
+
+        internal RerankConnectionTestService(SettingsManager settingsManager, HttpClient httpClient)
+        {
             _settingsManager = settingsManager ?? throw new ArgumentNullException(nameof(settingsManager));
-            // 使用共享 HttpClient，避免频繁创建导致的端口耗尽问题
-            _httpClient = HttpClientProvider.Shared;
-            // 使用静态 JsonSerializerOptions，避免每次构造
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         }
 
         /// <summary>
@@ -68,8 +70,8 @@ namespace LinkSearch.Services
             
             try
             {
-                // 检查API URL是否设置
-                var apiUrl = _settingsManager.RerankApiUrl;
+                var mode = _settingsManager.RankingMode;
+                var apiUrl = mode == RankingMode.Rerank ? _settingsManager.RerankApiUrl : _settingsManager.DecisionApiUrl;
                 if (string.IsNullOrWhiteSpace(apiUrl))
                 {
                     return RerankConnectionTestResult.CreateFailure(
@@ -80,7 +82,7 @@ namespace LinkSearch.Services
                 }
 
                 // 检查API Key是否设置
-                var apiKey = _settingsManager.RerankApiKey;
+                var apiKey = mode == RankingMode.Rerank ? _settingsManager.RerankApiKey : _settingsManager.DecisionApiKey;
                 if (string.IsNullOrWhiteSpace(apiKey))
                 {
                     return RerankConnectionTestResult.CreateFailure(
@@ -91,7 +93,7 @@ namespace LinkSearch.Services
                 }
 
                 // 检查模型名称是否设置
-                var modelName = _settingsManager.RerankModelName;
+                var modelName = mode == RankingMode.Rerank ? _settingsManager.RerankModelName : _settingsManager.DecisionModelName;
                 if (string.IsNullOrWhiteSpace(modelName))
                 {
                     return RerankConnectionTestResult.CreateFailure(
@@ -101,23 +103,16 @@ namespace LinkSearch.Services
                     );
                 }
 
-                // 创建测试请求
-                var testRequest = RerankRequest.Create(
-                    query: "test",
-                    documents: TestDocuments,
-                    model: modelName,
-                    topN: 1,
-                    returnDocuments: false,
-                    returnScores: true
-                );
-
-                // 序列化请求为 UTF-8 字节，避免中间 string 带来的大对象分配
-                var bytes = JsonSerializer.SerializeToUtf8Bytes(testRequest, s_jsonSerializerOptions);
+                var bytes = mode == RankingMode.Rerank
+                    ? JsonSerializer.SerializeToUtf8Bytes(
+                        RerankRequest.Create("test", TestDocuments, modelName, TestDocuments.Length, false, true),
+                        s_jsonSerializerOptions)
+                    : DecisionRanking.CreateRequest(mode, modelName, "test", TestDocuments);
                 using var content = new ByteArrayContent(bytes);
                 content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
  
                 // 为每次请求创建 HttpRequestMessage，避免修改共享 HttpClient.DefaultRequestHeaders 导致并发竞态
-                var requestMessage = new HttpRequestMessage(HttpMethod.Post, apiUrl)
+                using var requestMessage = new HttpRequestMessage(HttpMethod.Post, apiUrl)
                 {
                     Content = content
                 };
@@ -186,13 +181,16 @@ namespace LinkSearch.Services
                 try
                 {
                     await using var responseStream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
-                    var rerankResponse = await JsonSerializer.DeserializeAsync<RerankResponse>(responseStream, s_jsonSerializerOptions, effectiveToken).ConfigureAwait(false);
-                    
-                    if (rerankResponse == null)
+                    using var json = await JsonDocument.ParseAsync(responseStream, cancellationToken: effectiveToken).ConfigureAwait(false);
+                    var valid = mode == RankingMode.Rerank
+                        ? HasRerankResult(json.RootElement)
+                        : DecisionRanking.TryParseResponse(json.RootElement, mode, TestDocuments.Length, out _);
+
+                    if (!valid)
                     {
                         return RerankConnectionTestResult.CreateFailure(
                             "ResponseError",
-                            "API response was empty",
+                            "API response did not contain valid ranking results",
                             responseTimeMs,
                             (int)response.StatusCode,
                             string.Empty
@@ -315,6 +313,28 @@ namespace LinkSearch.Services
                     GetElapsedTimeMs(startTime)
                 );
             }
+        }
+
+        private static bool HasRerankResult(JsonElement root)
+        {
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var result in results.EnumerateArray())
+            {
+                if (result.ValueKind == JsonValueKind.Object &&
+                    result.TryGetProperty("index", out var index) &&
+                    index.ValueKind == JsonValueKind.Number && index.TryGetInt32(out var value) &&
+                    value >= 0 && value < TestDocuments.Length)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>

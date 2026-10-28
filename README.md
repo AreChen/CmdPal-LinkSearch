@@ -2,7 +2,7 @@
   <img src="./LinkSearch/Assets/StoreLogo.png" width="96" alt="LinkSearch logo" />
   <h1>LinkSearch</h1>
   <p><strong>Search Linkwarden from Microsoft PowerToys Command Palette.</strong></p>
-  <p>Find saved links, open pages quickly, and optionally rerank results with a semantic Rerank API.</p>
+  <p>Find saved links, open pages quickly, and optionally rank results with a rerank API or decision model.</p>
   <p>English | <a href="./README.zh.md">简体中文</a></p>
   <p>
     <a href="https://apps.microsoft.com/detail/9MZ9Q4CFP2N9"><img alt="Get it from Microsoft Store" src="https://img.shields.io/badge/Get_it_on-Microsoft_Store-0078D4?style=for-the-badge&logo=microsoftstore&logoColor=white" /></a>
@@ -47,7 +47,7 @@
     <td width="25%" valign="top">
       <img src="https://api.iconify.design/lucide:sparkles.svg?color=%230078D4" width="32" alt="Rerank icon" />
       <h3>Optional Rerank</h3>
-      <p>Connect a configurable Rerank API for better semantic ordering.</p>
+      <p>Use a rerank API or decision model for semantic ordering.</p>
     </td>
     <td width="25%" valign="top">
       <img src="https://api.iconify.design/lucide:languages.svg?color=%230078D4" width="32" alt="Language icon" />
@@ -73,12 +73,22 @@
 3. Configure your preferred shortcut key for the extension.
 4. Configure Linkwarden server address, access token, and maximum search result count.
 5. Choose the interface language: Auto, Simplified Chinese, or English.
-6. Optional: enable and configure Rerank service parameters, such as API URL, key, and model name.
+6. Optional: enable reranking, choose a mode, and configure its API URL, key, and model name.
 7. Enter the shortcut key and start searching.
 
 ## Rerank API
 
-LinkSearch is designed to work with services that expose a compatible rerank endpoint.
+Enable reranking in the settings and choose one of these modes:
+
+- **Rerank API**: use a compatible rerank endpoint with your existing rerank settings.
+- **Decision model: Noul**: use a System One endpoint to assess each candidate independently.
+- **Decision model: Choice**: compare all candidates with a System One endpoint and order them by relative probability.
+
+For decision modes, configure the full System One endpoint (for example, `https://decision.example.com/v1/systemone`), API key, and model name (for example, `Eapil-D1`) separately. The service must support the selected `noul` or `choice` question type. You can also set `LINKSEARCH_DECISION_API_URL`, `LINKSEARCH_DECISION_API_KEY`, and `LINKSEARCH_DECISION_MODEL_NAME` as environment variables; values entered in the extension settings take precedence.
+
+Ranking sends the query and each candidate's title, description, and tags, not the separate URL or collection fields. Titles, descriptions, or tags may themselves contain sensitive information. If the request fails or the decision response is incomplete, the original search order is retained. Choice compares all candidates in one request; probabilities from separate batches are not combined, and a large candidate set may exceed the service's limits.
+
+Rerank API mode works with services that expose a compatible rerank endpoint.
 
 Request example:
 

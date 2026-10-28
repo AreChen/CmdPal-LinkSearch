@@ -1,6 +1,6 @@
 # LinkSearch Privacy Policy
 
-Last updated: 2026-05-09
+Last updated: 2026-10-28
 
 LinkSearch is a PowerToys Command Palette extension for searching links from a Linkwarden server that you configure.
 
@@ -15,7 +15,7 @@ LinkSearch stores its settings locally on your device. These settings may includ
 - Your Linkwarden server URL
 - Your Linkwarden access token
 - Your preferred language and search settings
-- Optional rerank API URL, API key, and model settings
+- Optional rerank and decision API URLs, API keys, model settings, and ranking mode
 
 These settings are used only to run the extension and are not sent to the LinkSearch developer.
 
@@ -24,7 +24,7 @@ These settings are used only to run the extension and are not sent to the LinkSe
 LinkSearch makes network requests only to services that you configure or enable:
 
 - Linkwarden: LinkSearch sends your search query and Linkwarden access token to your configured Linkwarden server so it can search your links.
-- Optional rerank service: If you enable reranking, LinkSearch sends your search query and candidate link information, such as title, description, URL, tags, and collection name, to your configured rerank API provider.
+- Optional ranking service: If you enable reranking, LinkSearch sends your search query and candidates' titles, descriptions, and tags to the selected rerank or decision API, together with its API key. It does not send the separate URL or collection fields, although the text fields themselves may contain sensitive information or URLs.
 
 Those services are operated by you or by third parties you choose. Their privacy practices are governed by their own policies.
 

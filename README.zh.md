@@ -2,7 +2,7 @@
   <img src="./LinkSearch/Assets/StoreLogo.png" width="96" alt="LinkSearch logo" />
   <h1>LinkSearch</h1>
   <p><strong>在 Microsoft PowerToys Command Palette 中搜索 Linkwarden。</strong></p>
-  <p>快速找到收藏链接、打开页面，并可选接入 Rerank API 获得更符合语义的排序结果。</p>
+  <p>快速找到收藏链接、打开页面，并可选接入 Rerank 或决策模型优化结果排序。</p>
   <p><a href="./README.md">English</a> | 简体中文</p>
   <p>
     <a href="https://apps.microsoft.com/detail/9MZ9Q4CFP2N9"><img alt="从 Microsoft Store 获取" src="https://img.shields.io/badge/Get_it_on-Microsoft_Store-0078D4?style=for-the-badge&logo=microsoftstore&logoColor=white" /></a>
@@ -47,7 +47,7 @@
     <td width="25%" valign="top">
       <img src="https://api.iconify.design/lucide:sparkles.svg?color=%230078D4" width="32" alt="重排图标" />
       <h3>可选重排</h3>
-      <p>接入可配置的 Rerank API，按语义相关性重新排序。</p>
+      <p>使用 Rerank API 或决策模型，按语义相关性重新排序。</p>
     </td>
     <td width="25%" valign="top">
       <img src="https://api.iconify.design/lucide:languages.svg?color=%230078D4" width="32" alt="语言图标" />
@@ -73,12 +73,22 @@
 3. 为扩展配置你喜欢的快捷键。
 4. 配置 Linkwarden 服务器地址、访问令牌和最大检索返回结果数量。
 5. 选择界面语言：自动、简体中文或 English。
-6. 可选：启用并配置 Rerank 服务参数，例如 API URL、Key 和模型名。
+6. 可选：启用重排序，选择模式并配置对应服务的 API URL、密钥和模型名。
 7. 输入快捷键，开始检索。
 
 ## Rerank API
 
-LinkSearch 设计上兼容暴露类似 rerank endpoint 的服务。
+在设置中启用重排序并选择以下模式：
+
+- **Rerank API**：使用兼容 rerank 接口的服务，保留已有 Rerank 设置。
+- **决策模型：逐项判断 (Noul)**：通过 System One 接口分别判断每个候选的相关性。
+- **决策模型：候选选择 (Choice)**：通过 System One 接口比较所有候选，按返回的相对概率排序。
+
+决策模型需单独设置完整的 System One 地址（例如 `https://decision.example.com/v1/systemone`）、API 密钥和模型名称（例如 `Eapil-D1`）。服务必须支持所选的 `noul` 或 `choice` 问题类型。也可使用环境变量 `LINKSEARCH_DECISION_API_URL`、`LINKSEARCH_DECISION_API_KEY` 和 `LINKSEARCH_DECISION_MODEL_NAME`；扩展设置中填写的值优先。
+
+重排序时只发送搜索词以及候选的标题、描述、标签，不发送独立的链接地址和收藏夹字段；标题、描述或标签本身仍可能包含敏感内容。请求失败或决策响应不完整时，保留原始搜索顺序。Choice 一次比较全部候选，不会合并不同批次的概率；候选过多可能超过服务限制。
+
+Rerank API 模式兼容暴露类似 rerank endpoint 的服务。
 
 请求示例：
 

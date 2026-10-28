@@ -1,9 +1,11 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Text.Json.Nodes;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 using LinkSearch.Helpers;
 using LinkSearch.Localization;
+using LinkSearch.Models;
 using Xunit;
 
 namespace LinkSearch.Tests.Helpers;
@@ -79,6 +81,51 @@ public sealed class SettingsManagerTests
         var settings = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
 
         Assert.Throws<InvalidOperationException>(() => settings.SetForTest("linkSearch.DoesNotExist", "value"));
+    }
+
+    [Fact]
+    public void Existing_settings_default_to_rerank()
+    {
+        using var temp = new TempSettingsFile();
+        var existing = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        existing.SetForTest("linkSearch.RerankApiKey", "old-key");
+        existing.SaveSettings();
+        var oldSettings = JsonNode.Parse(File.ReadAllText(temp.Path))!.AsObject();
+        Assert.True(oldSettings.Remove("linkSearch.RankingMode"));
+        Assert.True(oldSettings.Remove("linkSearch.DecisionApiUrl"));
+        Assert.True(oldSettings.Remove("linkSearch.DecisionApiKey"));
+        Assert.True(oldSettings.Remove("linkSearch.DecisionModelName"));
+        File.WriteAllText(temp.Path, oldSettings.ToJsonString());
+        var reloaded = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+
+        Assert.Equal(RankingMode.Rerank, reloaded.RankingMode);
+        Assert.Equal("old-key", reloaded.RerankApiKey);
+    }
+
+    [Fact]
+    public void Decision_settings_are_persisted_without_overwriting_rerank_settings()
+    {
+        using var temp = new TempSettingsFile();
+        var settings = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        settings.SetForTest("linkSearch.RerankApiKey", "rerank-key");
+        settings.SetForTest("linkSearch.RankingMode", "decision-choice");
+        settings.SetForTest("linkSearch.DecisionApiUrl", "https://decision.example/v1/systemone");
+        settings.SetForTest("linkSearch.DecisionApiKey", "decision-key");
+        settings.SetForTest("linkSearch.DecisionModelName", "decision-model");
+        settings.SaveSettings();
+
+        var reloaded = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        Assert.Equal(RankingMode.DecisionChoice, reloaded.RankingMode);
+        Assert.Equal("https://decision.example/v1/systemone", reloaded.DecisionApiUrl);
+        Assert.Equal("decision-key", reloaded.DecisionApiKey);
+        Assert.Equal("decision-model", reloaded.DecisionModelName);
+        Assert.Equal("rerank-key", reloaded.RerankApiKey);
+
+        reloaded.SetForTest("linkSearch.RankingMode", "decision-noul");
+        Assert.Equal(RankingMode.DecisionNoul, reloaded.RankingMode);
+        reloaded.SetForTest("linkSearch.RankingMode", "rerank");
+        Assert.Equal(RankingMode.Rerank, reloaded.RankingMode);
+        Assert.Equal("decision-key", reloaded.DecisionApiKey);
     }
 
     private sealed class TempSettingsFile : IDisposable
