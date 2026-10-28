@@ -15,6 +15,7 @@
     <a href="#功能">功能</a> •
     <a href="#使用">使用</a> •
     <a href="#rerank-api">Rerank API</a> •
+    <a href="#决策模型-api">决策模型 API</a> •
     <a href="./PRIVACY.md">隐私</a>
   </p>
 </div>
@@ -76,7 +77,7 @@
 6. 可选：启用重排序，选择模式并配置对应服务的 API URL、密钥和模型名。
 7. 输入快捷键，开始检索。
 
-## Rerank API
+## 排序模式
 
 在设置中启用重排序并选择以下模式：
 
@@ -87,6 +88,8 @@
 决策模型需单独设置完整的 System One 地址（例如 `https://decision.example.com/v1/systemone`）、API 密钥和模型名称（例如 `Eapil-D1`）。服务必须支持所选的 `noul` 或 `choice` 问题类型。也可使用环境变量 `LINKSEARCH_DECISION_API_URL`、`LINKSEARCH_DECISION_API_KEY` 和 `LINKSEARCH_DECISION_MODEL_NAME`；扩展设置中填写的值优先。
 
 重排序时只发送搜索词以及候选的标题、描述、标签，不发送独立的链接地址和收藏夹字段；标题、描述或标签本身仍可能包含敏感内容。请求失败或决策响应不完整时，保留原始搜索顺序。Choice 一次比较全部候选，不会合并不同批次的概率；候选过多可能超过服务限制。
+
+## Rerank API
 
 Rerank API 模式兼容暴露类似 rerank endpoint 的服务。
 
@@ -146,6 +149,92 @@ curl --location 'https://rerank-api.provider.com/v1/rerank' \
   }
 }
 ```
+
+## 决策模型 API
+
+### 配置方式
+
+1. 安装 LinkSearch 0.1.8 或更新版本，启用重排序，选择 **决策模型：逐项判断 (Noul)** 或 **决策模型：候选选择 (Choice)**。
+2. 在三个决策模型设置项中分别填写完整接口地址、API 密钥和模型名称。例如：`https://decision.example.com/v1/systemone`、服务的密钥和 `Eapil-D1`。实际域名、接口路径和模型名称以服务提供方为准。
+3. 保存设置，搜索至少返回两条结果的关键词，并在决策服务后台检查是否调用了预期模型。选择决策模式时，不使用上面的 Rerank API 地址、密钥和模型名称。
+
+LinkSearch 使用 `POST` 请求，携带 `Authorization: Bearer <API 密钥>` 和 `Content-Type: application/json`。下面使用虚构书签展示扩展所需的字段。服务可以在响应根部或每个回答中返回其他元数据，但 `answers` 必须与请求的问题标识完全对应。请替换示例中的地址和模型名；curl 示例从环境变量 `LINKSEARCH_DECISION_API_KEY` 读取密钥，不要将真实 API 密钥提交到仓库。
+
+### Noul 请求与响应
+
+Noul 在一次请求中为每个候选生成一个问题。`state` 是搜索词，每个问题的 `instructions` 包含候选的标题、描述和标签。
+
+```bash
+curl --request POST 'https://decision.example.com/v1/systemone' \
+  --header "Authorization: Bearer $LINKSEARCH_DECISION_API_KEY" \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "model": "Eapil-D1",
+    "state": "python packaging",
+    "questions": {
+      "rel_0": {
+        "type": "noul",
+        "instructions": "Is this bookmark relevant to the query? Name: Python Packaging User Guide\r\nDescription: Packaging Python projects\r\nTags: python, packaging\r\n"
+      },
+      "rel_1": {
+        "type": "noul",
+        "instructions": "Is this bookmark relevant to the query? Name: The Rust Book\r\nDescription: Learn Rust\r\nTags: rust\r\n"
+      }
+    },
+    "stream": false
+  }'
+```
+
+响应示例：
+
+```json
+{
+  "answers": {
+    "rel_0": { "type": "noul", "noul": 0.93 },
+    "rel_1": { "type": "noul", "noul": 0.17 }
+  }
+}
+```
+
+每个问题都必须有对应的回答，`noul` 概率必须是 0 到 1 之间的有限数值。扩展按概率从高到低排序。
+
+### Choice 请求与响应
+
+Choice 将所有候选放入一个问题的 `criteria`。使用相同的接口地址和请求头，发送以下 JSON 请求体：
+
+```json
+{
+  "model": "Eapil-D1",
+  "state": "python packaging",
+  "questions": {
+    "rank": {
+      "type": "choice",
+      "instructions": "Which bookmark is most relevant to the query?",
+      "criteria": {
+        "doc_0": "Name: Python Packaging User Guide\r\nDescription: Packaging Python projects\r\nTags: python, packaging\r\n",
+        "doc_1": "Name: The Rust Book\r\nDescription: Learn Rust\r\nTags: rust\r\n"
+      }
+    }
+  },
+  "stream": false
+}
+```
+
+响应示例：
+
+```json
+{
+  "answers": {
+    "rank": {
+      "type": "choice",
+      "choice": "doc_0",
+      "probabilities": { "doc_0": 0.93, "doc_1": 0.07 }
+    }
+  }
+}
+```
+
+`choice` 必须是某个候选的标识；`probabilities` 必须为每个候选提供一个 0 到 1 之间的有限数值，总和与 1 的误差不能超过 0.001。扩展按各候选的概率排序，而不是只使用选中的候选。响应无效或不完整时保留原始顺序；分数相同时保持原有顺序。
 
 ## 路线图
 
