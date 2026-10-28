@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 using LinkSearch.Helpers;
@@ -210,7 +211,9 @@ public sealed class RankingServiceTests : IDisposable
     {
         var settings = new SettingsManager(Path.Combine(_directory, "settings.json"), null);
         settings.GetSettingForTest<ToggleSetting>("linkSearch.EnableRerank").Value = true;
-        settings.SetForTest("linkSearch.RankingMode", mode);
+        var rankingMode = settings.GetSettingForTest<ChoiceSetSetting>("linkSearch.RankingMode");
+        var selected = rankingMode.Choices.Single(choice => choice.Value == mode);
+        rankingMode.Update(new JsonObject { [rankingMode.Key] = selected.Value });
         settings.SetForTest("linkSearch.RerankApiUrl", "https://rerank.example/v1/rerank");
         settings.SetForTest("linkSearch.RerankApiKey", "rerank-key");
         settings.SetForTest("linkSearch.RerankModelName", "rerank-model");

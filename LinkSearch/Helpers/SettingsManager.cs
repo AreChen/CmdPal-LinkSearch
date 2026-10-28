@@ -24,9 +24,9 @@ public class SettingsManager : JsonSettingsManager
         Namespaced(nameof(LanguageMode)),
         new List<ChoiceSetSetting.Choice>
         {
-            new("auto", "Auto"),
-            new("zh-CN", "Chinese"),
-            new("en-US", "English"),
+            new("Auto", "auto"),
+            new("Chinese", "zh-CN"),
+            new("English", "en-US"),
         })
     {
         Value = "auto",
@@ -54,9 +54,9 @@ public class SettingsManager : JsonSettingsManager
         Namespaced(nameof(RankingMode)),
         new List<ChoiceSetSetting.Choice>
         {
-            new("rerank", "Rerank API"),
-            new("decision-noul", "Decision model: per item (Noul)"),
-            new("decision-choice", "Decision model: candidate choice (Choice)"),
+            new("Rerank API", "rerank"),
+            new("Decision model: per item (Noul)", "decision-noul"),
+            new("Decision model: candidate choice (Choice)", "decision-choice"),
         })
     {
         Value = "rerank",
@@ -505,6 +505,7 @@ public class SettingsManager : JsonSettingsManager
 
         // Load settings from file upon initialization
         LoadSettings();
+        MigrateLegacyChoiceValues();
         ApplyLocalizedSettingText();
 
         Settings.SettingsChanged += (s, a) =>
@@ -521,6 +522,32 @@ public class SettingsManager : JsonSettingsManager
     internal string Text(LocalizedTextKey key) => LocalizedStrings.Get(key, CurrentUiLanguage);
 
     internal string Format(LocalizedTextKey key, params object[] args) => LocalizedStrings.Format(key, CurrentUiLanguage, args);
+
+    private void MigrateLegacyChoiceValues()
+    {
+        var language = _language.Value;
+        var rankingMode = _rankingMode.Value;
+
+        _language.Value = language switch
+        {
+            "Auto" => "auto",
+            "Chinese" => "zh-CN",
+            "English" => "en-US",
+            _ => language,
+        };
+        _rankingMode.Value = rankingMode switch
+        {
+            "Rerank API" => "rerank",
+            "Decision model: per item (Noul)" => "decision-noul",
+            "Decision model: candidate choice (Choice)" => "decision-choice",
+            _ => rankingMode,
+        };
+
+        if (_language.Value != language || _rankingMode.Value != rankingMode)
+        {
+            SaveSettings();
+        }
+    }
 
     internal void SetForTest(string key, string value)
     {
