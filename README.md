@@ -1,3 +1,5 @@
+
+
 <div align="center">
   <img src="./LinkSearch/Assets/StoreLogo.png" width="96" alt="LinkSearch logo" />
   <h1>LinkSearch</h1>
@@ -64,7 +66,7 @@
 <a href="https://apps.microsoft.com/detail/9MZ9Q4CFP2N9"><img alt="Get it from Microsoft Store" src="https://img.shields.io/badge/Get_it_on-Microsoft_Store-0078D4?style=for-the-badge&logo=microsoftstore&logoColor=white" /></a>
 
 - Recommended: install LinkSearch from the [Microsoft Store](https://apps.microsoft.com/detail/9MZ9Q4CFP2N9).
-- Fallback: download the latest [GitHub Release](https://github.com/AreChen/CmdPal-LinkSearch/releases/latest) MSIX sideload package if Microsoft Store is unavailable.
+- Fallback: download the latest [GitHub Release](https://github.com/AreChen/CmdPal-LinkSearch/releases/latest) MSIX sideload package if Microsoft Store is unavailable. Run the included `Add-AppDevPackage.ps1` script from the package folder matching your CPU architecture.
 
 ## Usage
 
