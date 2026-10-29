@@ -67,9 +67,10 @@ namespace LinkSearch.Services
             }
 
             var mode = _settingsManager.RankingMode;
-            var apiKey = mode == RankingMode.Rerank ? _settingsManager.RerankApiKey : _settingsManager.DecisionApiKey;
-            var apiUrl = mode == RankingMode.Rerank ? _settingsManager.RerankApiUrl : _settingsManager.DecisionApiUrl;
-            var model = mode == RankingMode.Rerank ? _settingsManager.RerankModelName : _settingsManager.DecisionModelName;
+            var provider = _settingsManager.DecisionProvider;
+            var apiKey = mode == RankingMode.Rerank ? _settingsManager.RerankApiKey : _settingsManager.GetDecisionApiKey(provider);
+            var apiUrl = mode == RankingMode.Rerank ? _settingsManager.RerankApiUrl : _settingsManager.GetDecisionApiUrl(provider);
+            var model = mode == RankingMode.Rerank ? _settingsManager.RerankModelName : _settingsManager.GetDecisionModelName(provider);
             if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(model))
             {
                 return items;
@@ -91,8 +92,8 @@ namespace LinkSearch.Services
                 }
                 else
                 {
-                    var bytes = DecisionRanking.CreateRequest(mode, model, query, documents);
-                    rerankResponse = await CallDecisionApiAsync(bytes, mode, documents.Length, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
+                    var bytes = DecisionRanking.CreateRequest(mode, model, query, documents, provider);
+                    rerankResponse = await CallDecisionApiAsync(bytes, mode, provider, documents.Length, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
                 }
 
                 return ApplyRerankOrder(items, rerankResponse);
@@ -117,7 +118,7 @@ namespace LinkSearch.Services
             return sb.ToString();
         }
 
-        private async Task<RerankResponse?> CallDecisionApiAsync(byte[] body, RankingMode mode, int documentCount, string apiUrl, string apiKey, CancellationToken cancellationToken)
+        private async Task<RerankResponse?> CallDecisionApiAsync(byte[] body, RankingMode mode, DecisionProvider provider, int documentCount, string apiUrl, string apiKey, CancellationToken cancellationToken)
         {
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _serviceCts.Token);
             using var request = new HttpRequestMessage(HttpMethod.Post, apiUrl);
@@ -135,7 +136,7 @@ namespace LinkSearch.Services
 
             await using var responseStream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
             using var json = await JsonDocument.ParseAsync(responseStream, cancellationToken: linkedCts.Token).ConfigureAwait(false);
-            if (!DecisionRanking.TryParseResponse(json.RootElement, mode, documentCount, out var result))
+            if (!DecisionRanking.TryParseResponse(json.RootElement, mode, documentCount, out var result, provider))
             {
                 Log.Debug("Decision API returned an invalid response");
                 return null;

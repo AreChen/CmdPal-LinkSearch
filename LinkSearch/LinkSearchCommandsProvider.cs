@@ -17,6 +17,7 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
 {
     private readonly ICommandItem[] _commands;
     private static readonly SettingsManager _settingsManager = new();
+    private readonly LinkSearchSettingsView _settingsView;
     private readonly SearchCache _searchCache;
     private readonly RerankService _rerankService;
     private readonly RerankConnectionTestService _rerankConnectionTestService;
@@ -32,7 +33,8 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
     {
         DisplayName = "LinkSearch";
         Icon = Icons.LinkSearchExtIcon;
-        Settings = _settingsManager.Settings;
+        _settingsView = new LinkSearchSettingsView(_settingsManager);
+        Settings = _settingsView;
         
         // 创建服务实例
         _searchCache = new SearchCache();
@@ -48,7 +50,7 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
         _commands = [
             new CommandItem(_page) {
                 Title = DisplayName,
-                MoreCommands = [new CommandContextItem(_settingsManager.Settings.SettingsPage)],
+                MoreCommands = [new CommandContextItem(_settingsView.SettingsPage)],
             },
         ];
     }
@@ -75,6 +77,7 @@ public partial class LinkSearchCommandsProvider : CommandProvider, IDisposable
 
         try { _settingsManager.Settings.SettingsChanged -= OnProviderSettingsChanged; }
         catch (Exception ex) { Log.Error($"LinkSearchCommandsProvider.Dispose SettingsChanged 取消订阅异常: {ex.Message}"); }
+        _settingsView.Dispose();
 
         // 依次释放托管对象，逐一捕获异常避免影响整体释放流程
         try { _page?.Dispose(); }

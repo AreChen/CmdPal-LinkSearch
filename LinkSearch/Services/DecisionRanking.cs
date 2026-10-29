@@ -8,11 +8,16 @@ namespace LinkSearch.Services;
 
 internal static class DecisionRanking
 {
-    internal static byte[] CreateRequest(RankingMode mode, string model, string query, IReadOnlyList<string> documents)
+    internal static byte[] CreateRequest(RankingMode mode, string model, string query, IReadOnlyList<string> documents, DecisionProvider provider = DecisionProvider.SystemOne)
     {
         if (mode is not (RankingMode.DecisionNoul or RankingMode.DecisionChoice))
         {
             throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        if (provider == DecisionProvider.OpenAi)
+        {
+            return OpenAiDecisionRanking.CreateRequest(mode, model, query, documents);
         }
 
         using var stream = new MemoryStream();
@@ -49,15 +54,23 @@ internal static class DecisionRanking
             }
 
             writer.WriteEndObject();
-            writer.WriteBoolean("stream", false);
+            if (provider == DecisionProvider.SystemOne)
+            {
+                writer.WriteBoolean("stream", false);
+            }
             writer.WriteEndObject();
         }
 
         return stream.ToArray();
     }
 
-    internal static bool TryParseResponse(JsonElement root, RankingMode mode, int documentCount, out RerankResponse? response)
+    internal static bool TryParseResponse(JsonElement root, RankingMode mode, int documentCount, out RerankResponse? response, DecisionProvider provider = DecisionProvider.SystemOne)
     {
+        if (provider == DecisionProvider.OpenAi)
+        {
+            return OpenAiDecisionRanking.TryParseResponse(root, mode, documentCount, out response);
+        }
+
         response = null;
         if (documentCount <= 0 || root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty("answers", out var answers) || answers.ValueKind != JsonValueKind.Object)

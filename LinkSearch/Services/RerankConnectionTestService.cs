@@ -71,7 +71,8 @@ namespace LinkSearch.Services
             try
             {
                 var mode = _settingsManager.RankingMode;
-                var apiUrl = mode == RankingMode.Rerank ? _settingsManager.RerankApiUrl : _settingsManager.DecisionApiUrl;
+                var provider = _settingsManager.DecisionProvider;
+                var apiUrl = mode == RankingMode.Rerank ? _settingsManager.RerankApiUrl : _settingsManager.GetDecisionApiUrl(provider);
                 if (string.IsNullOrWhiteSpace(apiUrl))
                 {
                     return RerankConnectionTestResult.CreateFailure(
@@ -82,7 +83,7 @@ namespace LinkSearch.Services
                 }
 
                 // 检查API Key是否设置
-                var apiKey = mode == RankingMode.Rerank ? _settingsManager.RerankApiKey : _settingsManager.DecisionApiKey;
+                var apiKey = mode == RankingMode.Rerank ? _settingsManager.RerankApiKey : _settingsManager.GetDecisionApiKey(provider);
                 if (string.IsNullOrWhiteSpace(apiKey))
                 {
                     return RerankConnectionTestResult.CreateFailure(
@@ -93,7 +94,7 @@ namespace LinkSearch.Services
                 }
 
                 // 检查模型名称是否设置
-                var modelName = mode == RankingMode.Rerank ? _settingsManager.RerankModelName : _settingsManager.DecisionModelName;
+                var modelName = mode == RankingMode.Rerank ? _settingsManager.RerankModelName : _settingsManager.GetDecisionModelName(provider);
                 if (string.IsNullOrWhiteSpace(modelName))
                 {
                     return RerankConnectionTestResult.CreateFailure(
@@ -107,7 +108,7 @@ namespace LinkSearch.Services
                     ? JsonSerializer.SerializeToUtf8Bytes(
                         RerankRequest.Create("test", TestDocuments, modelName, TestDocuments.Length, false, true),
                         s_jsonSerializerOptions)
-                    : DecisionRanking.CreateRequest(mode, modelName, "test", TestDocuments);
+                    : DecisionRanking.CreateRequest(mode, modelName, "test", TestDocuments, provider);
                 using var content = new ByteArrayContent(bytes);
                 content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
  
@@ -184,7 +185,7 @@ namespace LinkSearch.Services
                     using var json = await JsonDocument.ParseAsync(responseStream, cancellationToken: effectiveToken).ConfigureAwait(false);
                     var valid = mode == RankingMode.Rerank
                         ? HasRerankResult(json.RootElement)
-                        : DecisionRanking.TryParseResponse(json.RootElement, mode, TestDocuments.Length, out _);
+                        : DecisionRanking.TryParseResponse(json.RootElement, mode, TestDocuments.Length, out _, provider);
 
                     if (!valid)
                     {

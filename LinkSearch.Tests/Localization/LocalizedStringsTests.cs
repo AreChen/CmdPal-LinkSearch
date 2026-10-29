@@ -74,7 +74,7 @@ public sealed class LocalizedStringsTests
 
         var message = RerankConnectionMessageFormatter.FormatFailure(result, UiLanguage.Chinese);
 
-        Assert.Contains("Rerank 连接失败", message);
+        Assert.Contains("排序服务连接失败", message);
         Assert.Contains("配置", message);
         Assert.DoesNotContain("ConfigurationError", message);
         Assert.DoesNotContain("Rerank API URL is not configured", message);

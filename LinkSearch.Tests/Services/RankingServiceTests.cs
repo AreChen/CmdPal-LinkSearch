@@ -21,6 +21,8 @@ public sealed class RankingServiceTests : IDisposable
     private const string NoulResponse = "{\"answers\":{\"rel_0\":{\"type\":\"noul\",\"noul\":0.1},\"rel_1\":{\"type\":\"noul\",\"noul\":0.9}}}";
     private const string ChoiceResponse = "{\"answers\":{\"rank\":{\"type\":\"choice\",\"choice\":\"doc_1\",\"probabilities\":{\"doc_0\":0.1,\"doc_1\":0.9}}}}";
     private const string RerankResponse = "{\"results\":[{\"index\":1,\"relevance_score\":0.9},{\"index\":0,\"relevance_score\":0.1}]}";
+    private const string OpenAiPredicateResponse = "{\"answers\":[{\"type\":\"predicate\",\"name\":\"rel_0\",\"probability\":0.1},{\"type\":\"predicate\",\"name\":\"rel_1\",\"probability\":0.9}]}";
+    private const string OpenAiChoiceResponse = "{\"answers\":[{\"type\":\"choice\",\"name\":\"rank\",\"choice\":\"doc_1\",\"probabilities\":[{\"value\":\"doc_0\",\"probability\":0.1},{\"value\":\"doc_1\",\"probability\":0.9}]}]}";
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "LinkSearch.Tests", Guid.NewGuid().ToString("N"));
     private readonly LinkwardenLink[] _links =
     {
@@ -69,6 +71,82 @@ public sealed class RankingServiceTests : IDisposable
         using var json = JsonDocument.Parse(body);
         Assert.Equal(mode == "rerank" ? "rerank-model" : "decision-model", json.RootElement.GetProperty("model").GetString());
         Assert.Equal("search query", json.RootElement.GetProperty(mode == "rerank" ? "query" : "state").GetString());
+    }
+
+    [Theory]
+    [InlineData("openrouter", "decision-noul")]
+    [InlineData("openrouter", "decision-choice")]
+    [InlineData("openai", "decision-noul")]
+    [InlineData("openai", "decision-choice")]
+    public async Task Search_and_connection_test_use_the_selected_decision_provider(string provider, string mode)
+    {
+        var settings = CreateSettings(mode);
+        settings.SetForTest("linkSearch.DecisionProvider", provider);
+        settings.SetForTest("linkSearch.OpenRouterApiKey", "router-key");
+        settings.SetForTest("linkSearch.OpenAiApiKey", "openai-key");
+        var calls = 0;
+        using var client = new HttpClient(new FakeHandler(async (request, token) =>
+        {
+            calls++;
+            Assert.Equal(provider == "openai" ? "https://api.openai.com/v1/decisions" : "https://openrouter.ai/api/alpha/decisions", request.RequestUri!.ToString());
+            Assert.Equal(provider == "openai" ? "openai-key" : "router-key", request.Headers.Authorization!.Parameter);
+            var body = await request.Content!.ReadAsStringAsync(token);
+            Assert.DoesNotContain("private.example", body);
+            Assert.DoesNotContain("private collection", body);
+            using var json = JsonDocument.Parse(body);
+            Assert.Equal(provider == "openai" ? "gpt-6-luna" : "typesafe/jev-1.14", json.RootElement.GetProperty("model").GetString());
+            Assert.False(json.RootElement.TryGetProperty("stream", out _));
+            Assert.Equal(provider == "openai" ? JsonValueKind.Array : JsonValueKind.Object, json.RootElement.GetProperty("questions").ValueKind);
+            return Response(provider == "openai"
+                ? mode == "decision-noul" ? OpenAiPredicateResponse : OpenAiChoiceResponse
+                : mode == "decision-noul" ? NoulResponse : ChoiceResponse);
+        }));
+        using var ranking = new RerankService(settings, client);
+        using var connection = new RerankConnectionTestService(settings, client);
+
+        Assert.Equal(new[] { _links[1], _links[0] }, await ranking.RerankLinksAsync("query", _links));
+        var result = await connection.TestConnectionAsync();
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.Equal(2, calls);
+    }
+
+    [Theory]
+    [InlineData("openai", "OpenAiApiUrl", "OpenAiApiKey", "https://gateway.example/v1/decisions", OpenAiPredicateResponse)]
+    [InlineData("openrouter", "OpenRouterApiUrl", "OpenRouterApiKey", "https://gateway.example/api/alpha/decisions", NoulResponse)]
+    public async Task Search_uses_provider_specific_gateway_endpoint(string provider, string urlSetting, string keySetting, string url, string payload)
+    {
+        var settings = CreateSettings("decision-noul");
+        settings.SetForTest("linkSearch.DecisionProvider", provider);
+        settings.SetForTest($"linkSearch.{urlSetting}", url);
+        settings.SetForTest($"linkSearch.{keySetting}", "gateway-key");
+        var calls = 0;
+        using var client = new HttpClient(new FakeHandler((request, _) =>
+        {
+            calls++;
+            Assert.Equal(url, request.RequestUri!.ToString());
+            Assert.Equal("gateway-key", request.Headers.Authorization!.Parameter);
+            return Task.FromResult(Response(payload));
+        }));
+        using var service = new RerankService(settings, client);
+        Assert.Equal(new[] { _links[1], _links[0] }, await service.RerankLinksAsync("query", _links));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task Refused_openai_answer_preserves_original_order_without_using_rerank()
+    {
+        var settings = CreateSettings("decision-noul");
+        settings.SetForTest("linkSearch.DecisionProvider", "openai");
+        settings.SetForTest("linkSearch.OpenAiApiKey", "openai-key");
+        var calls = 0;
+        using var client = new HttpClient(new FakeHandler((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(Response("{\"answers\":[{\"type\":\"predicate\",\"name\":\"rel_0\",\"probability\":0.1},{\"type\":\"refusal\",\"name\":\"rel_1\"}]}"));
+        }));
+        using var service = new RerankService(settings, client);
+        Assert.Same(_links, await service.RerankLinksAsync("query", _links));
+        Assert.Equal(1, calls);
     }
 
     [Theory]

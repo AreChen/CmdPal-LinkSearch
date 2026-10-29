@@ -15,6 +15,8 @@ namespace LinkSearch.Helpers;
 public class SettingsManager : JsonSettingsManager
 {
     private static readonly string _namespace = "linkSearch";
+    private const string DefaultOpenRouterUrl = "https://openrouter.ai/api/alpha/decisions";
+    private const string DefaultOpenAiUrl = "https://api.openai.com/v1/decisions";
 
     private static string Namespaced(string propertyName) => $"{_namespace}.{propertyName}";
 
@@ -88,6 +90,28 @@ public class SettingsManager : JsonSettingsManager
 
     private readonly TextSetting _decisionModelName = new(
         Namespaced(nameof(DecisionModelName)), "Decision Model Name", "Decision model name", string.Empty);
+
+    private readonly ChoiceSetSetting _decisionProvider = new(
+        Namespaced(nameof(DecisionProvider)),
+        new List<ChoiceSetSetting.Choice>
+        {
+            new("Custom System One", "system-one"),
+            new("OpenRouter", "openrouter"),
+            new("OpenAI", "openai"),
+        });
+
+    private readonly TextSetting _openRouterApiUrl = new(
+        Namespaced(nameof(OpenRouterApiUrl)), "OpenRouter Decisions URL", "Full OpenRouter Decisions endpoint URL", DefaultOpenRouterUrl);
+    private readonly TextSetting _openRouterApiKey = new(
+        Namespaced(nameof(OpenRouterApiKey)), "OpenRouter API Key", "OpenRouter API key", string.Empty);
+    private readonly TextSetting _openRouterModelName = new(
+        Namespaced(nameof(OpenRouterModelName)), "OpenRouter Model", "OpenRouter decision model", "typesafe/jev-1.14");
+    private readonly TextSetting _openAiApiUrl = new(
+        Namespaced(nameof(OpenAiApiUrl)), "OpenAI Decisions URL", "Full OpenAI Decisions endpoint URL", DefaultOpenAiUrl);
+    private readonly TextSetting _openAiApiKey = new(
+        Namespaced(nameof(OpenAiApiKey)), "OpenAI API Key", "OpenAI API key", string.Empty);
+    private readonly TextSetting _openAiModelName = new(
+        Namespaced(nameof(OpenAiModelName)), "OpenAI Model", "OpenAI decision model", "gpt-6-luna");
 
     private readonly TextSetting _searchDelayMilliseconds = new(
         Namespaced(nameof(SearchDelayMilliseconds)),
@@ -204,27 +228,79 @@ public class SettingsManager : JsonSettingsManager
         _ => RankingMode.Rerank,
     };
 
-    internal string DecisionApiUrl
+    internal DecisionProvider DecisionProvider => _decisionProvider.Value switch
     {
-        get
-        {
-            var value = _decisionApiUrl.Value;
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                value = Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_API_URL");
-            }
+        "openrouter" => DecisionProvider.OpenRouter,
+        "openai" => DecisionProvider.OpenAi,
+        _ => DecisionProvider.SystemOne,
+    };
 
-            return string.IsNullOrWhiteSpace(value) ? string.Empty : ValidateAndFormatUrl(value);
+    internal string OpenRouterApiUrl => ValidateAndFormatUrl(
+        string.IsNullOrWhiteSpace(_openRouterApiUrl.Value) ? DefaultOpenRouterUrl : _openRouterApiUrl.Value);
+
+    internal string OpenAiApiUrl => ValidateAndFormatUrl(
+        string.IsNullOrWhiteSpace(_openAiApiUrl.Value) ? DefaultOpenAiUrl : _openAiApiUrl.Value);
+
+    internal string OpenRouterApiKey => !string.IsNullOrWhiteSpace(_openRouterApiKey.Value)
+        ? _openRouterApiKey.Value
+        : Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? string.Empty;
+
+    internal string OpenRouterModelName => !string.IsNullOrWhiteSpace(_openRouterModelName.Value)
+        ? _openRouterModelName.Value
+        : Environment.GetEnvironmentVariable("LINKSEARCH_OPENROUTER_MODEL_NAME") ?? string.Empty;
+
+    internal string OpenAiApiKey => !string.IsNullOrWhiteSpace(_openAiApiKey.Value)
+        ? _openAiApiKey.Value
+        : Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+
+    internal string OpenAiModelName => !string.IsNullOrWhiteSpace(_openAiModelName.Value)
+        ? _openAiModelName.Value
+        : Environment.GetEnvironmentVariable("LINKSEARCH_OPENAI_MODEL_NAME") ?? string.Empty;
+
+    internal string DecisionApiUrl => GetDecisionApiUrl(DecisionProvider);
+
+    internal string GetDecisionApiUrl(DecisionProvider provider)
+    {
+        if (provider == DecisionProvider.OpenRouter)
+        {
+            return OpenRouterApiUrl;
         }
+
+        if (provider == DecisionProvider.OpenAi)
+        {
+            return OpenAiApiUrl;
+        }
+
+        var value = _decisionApiUrl.Value;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_API_URL");
+        }
+
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : ValidateAndFormatUrl(value);
     }
 
-    internal string DecisionApiKey => !string.IsNullOrWhiteSpace(_decisionApiKey.Value)
-        ? _decisionApiKey.Value
-        : Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_API_KEY") ?? string.Empty;
+    internal string DecisionApiKey => GetDecisionApiKey(DecisionProvider);
 
-    internal string DecisionModelName => !string.IsNullOrWhiteSpace(_decisionModelName.Value)
-        ? _decisionModelName.Value
-        : Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_MODEL_NAME") ?? string.Empty;
+    internal string GetDecisionApiKey(DecisionProvider provider) => provider switch
+    {
+        DecisionProvider.OpenRouter => OpenRouterApiKey,
+        DecisionProvider.OpenAi => OpenAiApiKey,
+        _ => !string.IsNullOrWhiteSpace(_decisionApiKey.Value)
+            ? _decisionApiKey.Value
+            : Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_API_KEY") ?? string.Empty,
+    };
+
+    internal string DecisionModelName => GetDecisionModelName(DecisionProvider);
+
+    internal string GetDecisionModelName(DecisionProvider provider) => provider switch
+    {
+        DecisionProvider.OpenRouter => OpenRouterModelName,
+        DecisionProvider.OpenAi => OpenAiModelName,
+        _ => !string.IsNullOrWhiteSpace(_decisionModelName.Value)
+            ? _decisionModelName.Value
+            : Environment.GetEnvironmentVariable("LINKSEARCH_DECISION_MODEL_NAME") ?? string.Empty,
+    };
 
     public string RerankApiUrl
     {
@@ -494,12 +570,19 @@ public class SettingsManager : JsonSettingsManager
         Settings.Add(_linkwardenApiKey);
         Settings.Add(_enableRerank);
         Settings.Add(_rankingMode);
+        Settings.Add(_decisionProvider);
         Settings.Add(_rerankApiUrl);
         Settings.Add(_rerankApiKey);
         Settings.Add(_rerankModelName);
         Settings.Add(_decisionApiUrl);
         Settings.Add(_decisionApiKey);
         Settings.Add(_decisionModelName);
+        Settings.Add(_openRouterApiUrl);
+        Settings.Add(_openRouterApiKey);
+        Settings.Add(_openRouterModelName);
+        Settings.Add(_openAiApiUrl);
+        Settings.Add(_openAiApiKey);
+        Settings.Add(_openAiModelName);
         Settings.Add(_searchDelayMilliseconds);
         Settings.Add(_maxResults);
 
@@ -551,6 +634,14 @@ public class SettingsManager : JsonSettingsManager
 
     internal void SetForTest(string key, string value)
     {
+        if (key == _decisionProvider.Key) { _decisionProvider.Value = value; return; }
+        if (key == _openRouterApiUrl.Key) { _openRouterApiUrl.Value = value; return; }
+        if (key == _openRouterApiKey.Key) { _openRouterApiKey.Value = value; return; }
+        if (key == _openRouterModelName.Key) { _openRouterModelName.Value = value; return; }
+        if (key == _openAiApiUrl.Key) { _openAiApiUrl.Value = value; return; }
+        if (key == _openAiApiKey.Key) { _openAiApiKey.Value = value; return; }
+        if (key == _openAiModelName.Key) { _openAiModelName.Value = value; return; }
+
         if (key == _rankingMode.Key)
         {
             _rankingMode.Value = value;
@@ -643,6 +734,13 @@ public class SettingsManager : JsonSettingsManager
             _ when key == _decisionApiUrl.Key => _decisionApiUrl,
             _ when key == _decisionApiKey.Key => _decisionApiKey,
             _ when key == _decisionModelName.Key => _decisionModelName,
+            _ when key == _decisionProvider.Key => _decisionProvider,
+            _ when key == _openRouterApiUrl.Key => _openRouterApiUrl,
+            _ when key == _openRouterApiKey.Key => _openRouterApiKey,
+            _ when key == _openRouterModelName.Key => _openRouterModelName,
+            _ when key == _openAiApiUrl.Key => _openAiApiUrl,
+            _ when key == _openAiApiKey.Key => _openAiApiKey,
+            _ when key == _openAiModelName.Key => _openAiModelName,
             _ when key == _searchDelayMilliseconds.Key => _searchDelayMilliseconds,
             _ when key == _maxResults.Key => _maxResults,
             _ => null,
@@ -670,6 +768,9 @@ public class SettingsManager : JsonSettingsManager
         _rankingMode.Choices[0].Title = Text(LocalizedTextKey.RankingModeRerank);
         _rankingMode.Choices[1].Title = Text(LocalizedTextKey.RankingModeDecisionNoul);
         _rankingMode.Choices[2].Title = Text(LocalizedTextKey.RankingModeDecisionChoice);
+        _decisionProvider.Label = Text(LocalizedTextKey.DecisionProviderLabel);
+        _decisionProvider.Description = Text(LocalizedTextKey.DecisionProviderDescription);
+        _decisionProvider.Choices[0].Title = Text(LocalizedTextKey.DecisionProviderSystemOne);
         _rerankApiUrl.Label = Text(LocalizedTextKey.RerankApiUrlLabel);
         _rerankApiUrl.Description = Text(LocalizedTextKey.RerankApiUrlDescription);
         _rerankApiKey.Label = Text(LocalizedTextKey.RerankApiKeyLabel);
@@ -682,6 +783,18 @@ public class SettingsManager : JsonSettingsManager
         _decisionApiKey.Description = Text(LocalizedTextKey.DecisionApiKeyDescription);
         _decisionModelName.Label = Text(LocalizedTextKey.DecisionModelNameLabel);
         _decisionModelName.Description = Text(LocalizedTextKey.DecisionModelNameDescription);
+        _openRouterApiUrl.Label = Text(LocalizedTextKey.OpenRouterApiUrlLabel);
+        _openRouterApiUrl.Description = Text(LocalizedTextKey.OpenRouterApiUrlLabel);
+        _openRouterApiKey.Label = Text(LocalizedTextKey.OpenRouterApiKeyLabel);
+        _openRouterApiKey.Description = Text(LocalizedTextKey.OpenRouterApiKeyLabel);
+        _openRouterModelName.Label = Text(LocalizedTextKey.OpenRouterModelLabel);
+        _openRouterModelName.Description = Text(LocalizedTextKey.OpenRouterModelLabel);
+        _openAiApiUrl.Label = Text(LocalizedTextKey.OpenAiApiUrlLabel);
+        _openAiApiUrl.Description = Text(LocalizedTextKey.OpenAiApiUrlLabel);
+        _openAiApiKey.Label = Text(LocalizedTextKey.OpenAiApiKeyLabel);
+        _openAiApiKey.Description = Text(LocalizedTextKey.OpenAiApiKeyLabel);
+        _openAiModelName.Label = Text(LocalizedTextKey.OpenAiModelLabel);
+        _openAiModelName.Description = Text(LocalizedTextKey.OpenAiModelLabel);
         _searchDelayMilliseconds.Label = Text(LocalizedTextKey.SearchDelayLabel);
         _searchDelayMilliseconds.Description = Text(LocalizedTextKey.SearchDelayDescription);
         _maxResults.Label = Text(LocalizedTextKey.MaxResultsLabel);
