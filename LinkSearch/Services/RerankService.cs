@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -52,18 +53,18 @@ namespace LinkSearch.Services
         /// <param name="links">Linkwarden 链接列表</param>
         /// <param name="cancellationToken">取消令牌</param>
         /// <returns>重新排序后的 Linkwarden 链接列表</returns>
-        public Task<IReadOnlyList<LinkwardenLink>> RerankLinksAsync(string query, IReadOnlyList<LinkwardenLink> links, CancellationToken cancellationToken = default)
+        public async Task<IReadOnlyList<LinkwardenLink>> RerankLinksAsync(string query, IReadOnlyList<LinkwardenLink> links, CancellationToken cancellationToken = default)
         {
-            return RerankItemsAsync(query, links, BuildDocument, cancellationToken);
+            return (await RankLinksAsync(query, links, cancellationToken).ConfigureAwait(false)).Links;
         }
 
-        private async Task<IReadOnlyList<T>> RerankItemsAsync<T>(string query, IReadOnlyList<T> items, Func<T, string> buildDocument, CancellationToken cancellationToken)
+        internal async Task<RankingOutcome> RankLinksAsync(string query, IReadOnlyList<LinkwardenLink> items, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (items.Count < 2 || !_settingsManager.EnableRerank)
             {
-                return items;
+                return new RankingOutcome(items, RankingStatus.Skipped);
             }
 
             var mode = _settingsManager.RankingMode;
@@ -73,30 +74,36 @@ namespace LinkSearch.Services
             var model = mode == RankingMode.Rerank ? _settingsManager.RerankModelName : _settingsManager.GetDecisionModelName(provider);
             if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(apiUrl) || string.IsNullOrWhiteSpace(model))
             {
-                return items;
+                return new RankingOutcome(items, RankingStatus.ConfigurationError);
             }
 
             try
             {
-                var documents = new string[items.Count];
-                for (var i = 0; i < items.Count; i++)
+                var documents = new string[Math.Min(items.Count, _settingsManager.RankingCandidateLimit)];
+                for (var i = 0; i < documents.Length; i++)
                 {
-                    documents[i] = buildDocument(items[i]);
+                    documents[i] = BuildDocument(items[i]);
                 }
 
-                RerankResponse? rerankResponse;
+                (RerankResponse? Response, int? HttpStatusCode) apiResult;
                 if (mode == RankingMode.Rerank)
                 {
                     var rerankRequest = RerankRequest.Create(query, documents, model, documents.Length, false, true);
-                    rerankResponse = await CallRerankApiAsync(rerankRequest, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
+                    apiResult = await CallRerankApiAsync(rerankRequest, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
                     var bytes = DecisionRanking.CreateRequest(mode, model, query, documents, provider);
-                    rerankResponse = await CallDecisionApiAsync(bytes, mode, provider, documents.Length, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
+                    apiResult = await CallDecisionApiAsync(bytes, mode, provider, documents.Length, apiUrl, apiKey, cancellationToken).ConfigureAwait(false);
                 }
 
-                return ApplyRerankOrder(items, rerankResponse);
+                if (apiResult.Response?.Results is not { Length: > 0 } results ||
+                    !Array.Exists(results, result => result.Index >= 0 && result.Index < documents.Length))
+                {
+                    return new RankingOutcome(items, RankingStatus.Failed, apiResult.HttpStatusCode);
+                }
+
+                return new RankingOutcome(ApplyRerankOrder(items, apiResult.Response, documents.Length), RankingStatus.Applied);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -105,7 +112,7 @@ namespace LinkSearch.Services
             catch (Exception ex)
             {
                 Log.Debug($"Rerank failed and original order will be used: {ex.Message}");
-                return items;
+                return new RankingOutcome(items, RankingStatus.Failed);
             }
         }
 
@@ -113,12 +120,18 @@ namespace LinkSearch.Services
         {
             var sb = new StringBuilder(256);
             sb.Append("Name: ").AppendLine(link.Name);
-            sb.Append("Description: ").AppendLine(link.Description);
-            sb.Append("Tags: ").AppendLine(string.Join(", ", link.Tags));
+            if (!string.IsNullOrWhiteSpace(link.Description))
+            {
+                sb.Append("Description: ").AppendLine(link.Description);
+            }
+            if (link.Tags.Any(tag => !string.IsNullOrWhiteSpace(tag)))
+            {
+                sb.Append("Tags: ").AppendLine(string.Join(", ", link.Tags));
+            }
             return sb.ToString();
         }
 
-        private async Task<RerankResponse?> CallDecisionApiAsync(byte[] body, RankingMode mode, DecisionProvider provider, int documentCount, string apiUrl, string apiKey, CancellationToken cancellationToken)
+        private async Task<(RerankResponse? Response, int? HttpStatusCode)> CallDecisionApiAsync(byte[] body, RankingMode mode, DecisionProvider provider, int documentCount, string apiUrl, string apiKey, CancellationToken cancellationToken)
         {
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _serviceCts.Token);
             using var request = new HttpRequestMessage(HttpMethod.Post, apiUrl);
@@ -131,7 +144,7 @@ namespace LinkSearch.Services
             if (!response.IsSuccessStatusCode)
             {
                 Log.Debug($"Decision API request failed with HTTP {(int)response.StatusCode}");
-                return null;
+                return (null, (int)response.StatusCode);
             }
 
             await using var responseStream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
@@ -139,13 +152,13 @@ namespace LinkSearch.Services
             if (!DecisionRanking.TryParseResponse(json.RootElement, mode, documentCount, out var result, provider))
             {
                 Log.Debug("Decision API returned an invalid response");
-                return null;
+                return (null, null);
             }
 
-            return result;
+            return (result, null);
         }
 
-        internal static IReadOnlyList<T> ApplyRerankOrder<T>(IReadOnlyList<T> links, RerankResponse? response)
+        internal static IReadOnlyList<T> ApplyRerankOrder<T>(IReadOnlyList<T> links, RerankResponse? response, int? rankedCount = null)
         {
             if (response?.Results is null || response.Results.Length == 0)
             {
@@ -156,7 +169,7 @@ namespace LinkSearch.Services
             var used = new HashSet<int>();
             foreach (var result in response.Results)
             {
-                if (result.Index >= 0 && result.Index < links.Count && used.Add(result.Index))
+                if (result.Index >= 0 && result.Index < Math.Min(links.Count, rankedCount ?? links.Count) && used.Add(result.Index))
                 {
                     ordered.Add(links[result.Index]);
                 }
@@ -186,7 +199,7 @@ namespace LinkSearch.Services
         /// <returns>rerank响应</returns>
         [UnconditionalSuppressMessage("Trimming", "IL2026")]
         [UnconditionalSuppressMessage("AOT", "IL3050")]
-        private async Task<RerankResponse?> CallRerankApiAsync(RerankRequest request, string apiUrl, string apiKey, CancellationToken cancellationToken = default)
+        private async Task<(RerankResponse? Response, int? HttpStatusCode)> CallRerankApiAsync(RerankRequest request, string apiUrl, string apiKey, CancellationToken cancellationToken = default)
         {
 #if DEBUG
             Log.Debug("开始调用rerank API");
@@ -197,7 +210,7 @@ namespace LinkSearch.Services
 #if DEBUG
                 Log.Debug("Rerank API URL未设置");
 #endif
-                return null;
+                return (null, null);
             }
 
             // 链接服务级取消令牌与外部传入的取消令牌，任一取消则请求取消
@@ -241,11 +254,10 @@ namespace LinkSearch.Services
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    var errorContent = await response.Content.ReadAsStringAsync(effectiveToken).ConfigureAwait(false);
 #if DEBUG
-                    Log.Debug($"Rerank API请求失败，状态码: {response.StatusCode}, 响应内容: {errorContent}");
+                    Log.Debug($"Rerank API请求失败，状态码: {response.StatusCode}");
 #endif
-                    return null;
+                    return (null, (int)response.StatusCode);
                 }
 
                 // 使用流式反序列化，避免把整个响应先读入 string
@@ -257,7 +269,7 @@ namespace LinkSearch.Services
                 Log.Debug($"JSON反序列化完成，耗时: {deserializationStart.ElapsedMilliseconds}ms");
                 Log.Debug("Rerank API调用成功");
 #endif
-                return rerankResponse;
+                return (rerankResponse, null);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -266,27 +278,27 @@ namespace LinkSearch.Services
             catch (OperationCanceledException) when (_serviceCts.IsCancellationRequested)
             {
                 Log.Info("Rerank API request was canceled because the service is disposing");
-                return null;
+                return (null, null);
             }
             catch (TaskCanceledException ex) when (!effectiveToken.IsCancellationRequested)
             {
                 Log.Debug($"Rerank API timed out: {ex.Message}");
-                return null;
+                return (null, null);
             }
             catch (HttpRequestException ex)
             {
                 Log.Debug($"Rerank API HTTP请求异常: {ex.Message}");
-                return null;
+                return (null, null);
             }
             catch (JsonException ex)
             {
                 Log.Debug($"Rerank API JSON序列化异常: {ex.Message}");
-                return null;
+                return (null, null);
             }
             catch (Exception ex)
             {
                 Log.Debug($"Rerank API未预期的异常: {ex.Message}");
-                return null;
+                return (null, null);
             }
         }
 

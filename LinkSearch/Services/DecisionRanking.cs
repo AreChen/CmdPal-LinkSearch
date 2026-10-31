@@ -17,7 +17,7 @@ internal static class DecisionRanking
 
         if (provider == DecisionProvider.OpenAi)
         {
-            return OpenAiDecisionRanking.CreateRequest(mode, model, query, documents);
+            return OpenAiDecisionRanking.CreateRequest(model, query, documents);
         }
 
         using var stream = new MemoryStream();
@@ -68,7 +68,12 @@ internal static class DecisionRanking
     {
         if (provider == DecisionProvider.OpenAi)
         {
-            return OpenAiDecisionRanking.TryParseResponse(root, mode, documentCount, out response);
+            if (mode is not (RankingMode.DecisionNoul or RankingMode.DecisionChoice))
+            {
+                response = null;
+                return false;
+            }
+            return OpenAiDecisionRanking.TryParseResponse(root, documentCount, out response);
         }
 
         response = null;

@@ -43,7 +43,7 @@ internal sealed class SearchResultPresenter
         };
     }
 
-    public IReadOnlyList<IListItem> CreateResultItems(IReadOnlyList<LinkwardenLink>? links)
+    public IReadOnlyList<IListItem> CreateResultItems(IReadOnlyList<LinkwardenLink>? links, IDictionary<LinkwardenLink, IListItem>? existingItems = null)
     {
         var items = new List<IListItem>();
         if (links is null || links.Count == 0)
@@ -67,18 +67,26 @@ internal sealed class SearchResultPresenter
 
             try
             {
+                if (existingItems is not null && existingItems.TryGetValue(link, out var existing))
+                {
+                    items.Add(existing);
+                    continue;
+                }
+
                 var name = link.Name ?? string.Empty;
                 var description = link.Description ?? string.Empty;
                 var collectionName = link.Collection ?? string.Empty;
                 var linkTags = link.Tags ?? Array.Empty<string>();
                 var collection = string.IsNullOrWhiteSpace(collectionName) ? string.Empty : $" [{collectionName}]";
                 var tags = linkTags.Count == 0 ? string.Empty : $" #{_settingsManager.Text(LocalizedTextKey.TagLabel)}: {string.Join(", ", linkTags)}";
-                items.Add(new ListItem(new OpenUrlCommand(link.Url, _settingsManager))
+                var item = new ListItem(new OpenUrlCommand(link.Url, _settingsManager))
                 {
                     Title = $"{name}{collection}",
                     Subtitle = $"{description}{tags}",
                     Icon = Icons.LinkSearchExtIcon,
-                });
+                };
+                items.Add(item);
+                existingItems?.Add(link, item);
             }
             catch (ArgumentException ex)
             {

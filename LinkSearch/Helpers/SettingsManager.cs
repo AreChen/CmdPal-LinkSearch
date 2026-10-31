@@ -52,6 +52,12 @@ public class SettingsManager : JsonSettingsManager
         "Reorder search results using rerank",
         false);
 
+    private readonly ToggleSetting _rankingEnabledExplicitlySet = new(
+        Namespaced("RankingEnabledExplicitlySet"),
+        "Ranking enablement explicitly configured",
+        "Whether the ranking toggle has been saved in settings",
+        false);
+
     private readonly ChoiceSetSetting _rankingMode = new(
         Namespaced(nameof(RankingMode)),
         new List<ChoiceSetSetting.Choice>
@@ -125,6 +131,16 @@ public class SettingsManager : JsonSettingsManager
         "Maximum number of search results (1-200)",
         "50");
 
+    private readonly TextSetting _rankingCandidateLimit = new(
+        Namespaced(nameof(RankingCandidateLimit)),
+        "Ranking Candidate Limit",
+        "Maximum number of candidates sent for ranking (2-200)",
+        "50");
+
+    internal int RankingCandidateLimit => int.TryParse(_rankingCandidateLimit.Value, out var value)
+        ? Math.Clamp(value, 2, 200)
+        : 50;
+
     public string LinkwardenBaseUrl
     {
         get
@@ -189,37 +205,11 @@ public class SettingsManager : JsonSettingsManager
         }
     }
 
-    public bool EnableRerank
-    {
-        get
-        {
-            Log.Debug("开始获取EnableRerank");
-            
-            // 实现多层次配置优先级：插件界面设置 > 环境变量 > 默认值
-            var enableRerank = _enableRerank.Value;
-            Log.Debug($"插件界面设置的EnableRerank: {enableRerank}");
-            
-            // 如果插件界面设置不为空，则直接返回
-            if (enableRerank)
-            {
-                Log.Debug("使用插件界面设置的EnableRerank: true");
-                return true;
-            }
-            
-            // 尝试从环境变量读取
-            var envValue = Environment.GetEnvironmentVariable("LINKSEARCH_ENABLE_RERANK");
-            Log.Debug($"环境变量中的EnableRerank: {envValue}");
-            if (!string.IsNullOrWhiteSpace(envValue) && bool.TryParse(envValue, out var envEnableRerank))
-            {
-                Log.Debug("使用环境变量中的EnableRerank");
-                return envEnableRerank;
-            }
-            
-            // 如果以上方式都未获取到有效的设置，则返回默认值false
-            Log.Debug("使用默认的EnableRerank: false");
-            return false;
-        }
-    }
+    public bool EnableRerank => ResolveRankingEnabled(
+        _enableRerank.Value, _rankingEnabledExplicitlySet.Value, Environment.GetEnvironmentVariable("LINKSEARCH_ENABLE_RERANK"));
+
+    internal static bool ResolveRankingEnabled(bool enabled, bool explicitlySet, string? environmentValue) =>
+        explicitlySet || enabled ? enabled : bool.TryParse(environmentValue, out var fromEnvironment) && fromEnvironment;
 
     internal RankingMode RankingMode => _rankingMode.Value switch
     {
@@ -569,6 +559,7 @@ public class SettingsManager : JsonSettingsManager
         Settings.Add(_linkwardenBaseUrl);
         Settings.Add(_linkwardenApiKey);
         Settings.Add(_enableRerank);
+        Settings.Add(_rankingEnabledExplicitlySet);
         Settings.Add(_rankingMode);
         Settings.Add(_decisionProvider);
         Settings.Add(_rerankApiUrl);
@@ -585,6 +576,7 @@ public class SettingsManager : JsonSettingsManager
         Settings.Add(_openAiModelName);
         Settings.Add(_searchDelayMilliseconds);
         Settings.Add(_maxResults);
+        Settings.Add(_rankingCandidateLimit);
 
         // Load settings from file upon initialization
         LoadSettings();
@@ -708,6 +700,12 @@ public class SettingsManager : JsonSettingsManager
             return;
         }
 
+        if (key == _rankingCandidateLimit.Key)
+        {
+            _rankingCandidateLimit.Value = value;
+            return;
+        }
+
         if (key == _language.Key)
         {
             _language.Value = value;
@@ -727,6 +725,7 @@ public class SettingsManager : JsonSettingsManager
             _ when key == _linkwardenBaseUrl.Key => _linkwardenBaseUrl,
             _ when key == _linkwardenApiKey.Key => _linkwardenApiKey,
             _ when key == _enableRerank.Key => _enableRerank,
+            _ when key == _rankingEnabledExplicitlySet.Key => _rankingEnabledExplicitlySet,
             _ when key == _rankingMode.Key => _rankingMode,
             _ when key == _rerankApiUrl.Key => _rerankApiUrl,
             _ when key == _rerankApiKey.Key => _rerankApiKey,
@@ -743,6 +742,7 @@ public class SettingsManager : JsonSettingsManager
             _ when key == _openAiModelName.Key => _openAiModelName,
             _ when key == _searchDelayMilliseconds.Key => _searchDelayMilliseconds,
             _ when key == _maxResults.Key => _maxResults,
+            _ when key == _rankingCandidateLimit.Key => _rankingCandidateLimit,
             _ => null,
         };
 
@@ -799,6 +799,8 @@ public class SettingsManager : JsonSettingsManager
         _searchDelayMilliseconds.Description = Text(LocalizedTextKey.SearchDelayDescription);
         _maxResults.Label = Text(LocalizedTextKey.MaxResultsLabel);
         _maxResults.Description = Text(LocalizedTextKey.MaxResultsDescription);
+        _rankingCandidateLimit.Label = Text(LocalizedTextKey.RankingCandidateLimitLabel);
+        _rankingCandidateLimit.Description = Text(LocalizedTextKey.RankingCandidateLimitDescription);
     }
 
     /// <summary>

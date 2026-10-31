@@ -11,15 +11,21 @@ English | [简体中文](./ranking.zh.md) | [Back to README](../README.md)
 
 ## Ranking Modes
 
-Enable reranking in the settings and choose one of these modes:
+Enable ranking and choose a service:
 
 - **Rerank API**: use a compatible rerank endpoint with your existing rerank settings.
-- **Decision model: per item (Noul / Predicate)**: assess each candidate independently.
-- **Decision model: Choice**: compare all candidates and order them by relative probability.
+- **OpenRouter** or **Custom System One**: choose per-item Noul (recommended for Jev) or Choice.
+- **OpenAI**: assess each candidate using Score and sort by its score.
 
-Decision modes support custom System One, OpenRouter, and the official OpenAI Decisions API. Each provider has separate settings and credentials; the Rerank API settings remain unchanged. OpenAI and OpenRouter presets are not available in version 0.1.8.
+Each service has separate settings and credentials. Existing OpenAI configurations keep their endpoint, model and key; their previous per-item or Choice setting now uses Score. Switching back to OpenRouter or System One retains the previous decision mode.
 
-Ranking sends the query and each candidate's title, description, and tags, not the separate URL or collection fields. Titles, descriptions, or tags may themselves contain sensitive information. If the request fails or the decision response is incomplete, the original search order is retained. Choice compares all candidates in one request; probabilities from separate batches are not combined, and a large candidate set may exceed the service's limits.
+Ranking sends the query and each candidate's title, description, and tags, not the separate URL or collection fields. Empty or whitespace-only descriptions and tags are omitted. Titles, descriptions, or tags may themselves contain sensitive information. The original results appear first and update when ranking finishes. Failures are shown on the first result, the original order is retained, and no other service is called automatically. Changing the search cancels the old request where possible, but the provider may already have processed or billed it.
+
+The `LINKSEARCH_ENABLE_RERANK=true` environment variable can enable ranking before the settings form is saved. Once settings have been saved, the form's ranking switch takes precedence, including when it is switched off.
+
+**Ranking candidate limit** defaults to 50 and is independent of the display limit; values are clamped to 2-200. Only the first candidates returned by Linkwarden are ranked in one request, and later candidates retain their relative order after those ranked. A lower limit can reduce latency and cost, but a relevant item outside that prefix cannot be promoted into the ranked group. Choice probabilities from separate batches are not combined. Check your provider's own limits.
+
+Select **Save and test connection** to save the current settings and send two fictional bookmarks using the selected service and protocol. This is a real request and may incur charges; the settings form is temporarily unavailable until the test finishes.
 
 The `curl` examples below use Bash syntax; on Windows, run them in WSL or Git Bash rather than PowerShell.
 
@@ -71,12 +77,12 @@ Each `index` refers to a position in the original `documents` array. LinkSearch 
 
 ### Configuration
 
-1. Enable ranking and choose **Per item** (Noul / Predicate) or **Choice**. Ranking settings stay hidden while ranking is disabled.
-2. Choose the **Decision provider**. Its fields appear immediately; enter the endpoint, API key and model, then save. OpenAI and OpenRouter also provide links to their official setup and Decisions guides.
+1. Enable ranking and choose the service. Ranking settings stay hidden while ranking is disabled.
+2. For OpenRouter or custom System One, choose **Per item** (Noul) or **Choice**. OpenAI uses Score automatically. The selected service's fields appear immediately; enter the endpoint, API key and model, then save. OpenAI and OpenRouter also provide links to their official setup and Decisions guides.
    - **Custom System One**: enter the full endpoint, key and model. The existing `LINKSEARCH_DECISION_API_URL`, `LINKSEARCH_DECISION_API_KEY` and `LINKSEARCH_DECISION_MODEL_NAME` environment variables are still supported.
    - **OpenRouter**: the default endpoint is `https://openrouter.ai/api/alpha/decisions`, and the default model is `typesafe/jev-1.14`. An empty key falls back to `OPENROUTER_API_KEY`.
    - **OpenAI**: the default endpoint is `https://api.openai.com/v1/decisions`, and the default model is `gpt-6-luna`. An empty key falls back to `OPENAI_API_KEY`. The API key and account must have access to the model.
-3. Search for a term that returns at least two results and check the selected service's request logs. The Rerank API fields are not used in decision modes. The provider must support the selected question type and model.
+3. Use **Save and test connection**, then search for a term that returns at least two results and check the selected service's request logs. The Rerank API fields are not used with decision services. The provider must support the selected question type and model.
 
 Both providers accept a custom **full endpoint URL** for compatible gateways, such as `https://gateway.example/api/alpha/decisions` for OpenRouter or `https://gateway.example/v1/decisions` for OpenAI; use the gateway's key and confirm that its model and protocol are supported. The key and bookmark data are sent to the configured endpoint, so use a trusted HTTPS gateway. Leaving the endpoint blank restores the official default.
 
@@ -182,49 +188,48 @@ The answer has the same object-shaped `answers` as the custom System One example
 
 ### OpenAI Decisions
 
-[OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) uses `input` and arrays of named questions and answers. Per-item mode sends `predicate` questions:
+[OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) uses `input` and arrays of named questions and answers. LinkSearch sends one `score` question per candidate with four ordered relevance levels and repeats the query in each question. This adds input tokens as the candidate count or query length grows:
 
 ```bash
 curl --request POST 'https://api.openai.com/v1/decisions' \
   --header "Authorization: Bearer $OPENAI_API_KEY" \
   --header 'Content-Type: application/json' \
-  --data '{
+  --data-binary @- <<'JSON'
+  {
     "model": "gpt-6-luna",
     "input": "python packaging",
     "questions": [
-      { "type": "predicate", "name": "rel_0", "instructions": "Is this bookmark relevant to the query? Name: Python Packaging User Guide\nDescription: Packaging Python projects\nTags: python, packaging" },
-      { "type": "predicate", "name": "rel_1", "instructions": "Is this bookmark relevant to the query? Name: The Rust Book\nDescription: Learn Rust\nTags: rust" }
+      { "type": "score", "name": "rel_0", "instructions": "How well does this bookmark address the user's search query? Search query: python packaging. Name: Python Packaging User Guide\nDescription: Packaging Python projects\nTags: python, packaging\n",
+        "levels": [
+          { "label": "unrelated", "description": "Does not address the user's requested subject or task." },
+          { "label": "weak", "description": "Related to the subject but does not address the requested task." },
+          { "label": "partial", "description": "Addresses part of the requested task but misses an important requirement." },
+          { "label": "direct", "description": "Directly addresses the specific subject and task in the query." }
+        ] },
+      { "type": "score", "name": "rel_1", "instructions": "How well does this bookmark address the user's search query? Search query: python packaging. Name: The Rust Book\nDescription: Learn Rust\nTags: rust\n",
+        "levels": [
+          { "label": "unrelated", "description": "Does not address the user's requested subject or task." },
+          { "label": "weak", "description": "Related to the subject but does not address the requested task." },
+          { "label": "partial", "description": "Addresses part of the requested task but misses an important requirement." },
+          { "label": "direct", "description": "Directly addresses the specific subject and task in the query." }
+        ] }
     ]
-  }'
+  }
+JSON
 ```
 
 ```json
 { "answers": [
-  { "type": "predicate", "name": "rel_0", "probability": 0.93 },
-  { "type": "predicate", "name": "rel_1", "probability": 0.17 }
+  { "type": "score", "name": "rel_0", "score": 2.85 },
+  { "type": "score", "name": "rel_1", "score": 0.12 }
 ] }
 ```
 
-For Choice mode, send the same `model` and `input`, with the following `questions` array:
-
-```json
-[{ "type": "choice", "name": "rank", "instructions": "Which bookmark is most relevant to the query?",
-   "choices": [
-     { "value": "doc_0", "description": "Name: Python Packaging User Guide\nDescription: Packaging Python projects\nTags: python, packaging" },
-     { "value": "doc_1", "description": "Name: The Rust Book\nDescription: Learn Rust\nTags: rust" }
-   ] }]
-```
-
-```json
-{ "answers": [{ "type": "choice", "name": "rank", "choice": "doc_0", "confidence": 0.93,
-  "probabilities": [{ "value": "doc_0", "probability": 0.93 }, { "value": "doc_1", "probability": 0.07 }] }] }
-```
-
-Answers are matched by `name` and choice probabilities by `value`. A refusal, missing answer, incomplete probabilities, or invalid values leaves the original order unchanged. OpenAI Choice accepts 2 to 255 candidates; LinkSearch limits search results to 200.
+Answers are matched by `name`; a finite `score` from 0 through 3 is required for each candidate. Higher scores rank first, with original order used for ties. A refusal, missing answer, or invalid score leaves the original order unchanged. Extra response metadata is ignored.
 
 ## Troubleshooting
 
-- If no request appears, enable ranking, save the settings, and search for a term with at least two results. Verify the selected mode, endpoint, key, and model.
+- If no request appears, enable ranking and use **Save and test connection**. Check the selected service, endpoint, key, and model, then search for at least two results.
 - Each decision provider has its own configuration. Decision modes do not use the Rerank API fields.
-- If a request fails or a decision response is incomplete or invalid, LinkSearch keeps the original order. Check the service's response format and logs; Choice requires a probability for every candidate.
+- If ranking fails, the first result shows an error and LinkSearch keeps the original order. Check the service's response format and logs; Choice requires a probability for every candidate, and Score requires one valid score per candidate.
 - Rerank results are displayed in the order returned by the service. Confirm the service has sorted its `results` array.

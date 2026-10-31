@@ -21,8 +21,7 @@ public sealed class RankingServiceTests : IDisposable
     private const string NoulResponse = "{\"answers\":{\"rel_0\":{\"type\":\"noul\",\"noul\":0.1},\"rel_1\":{\"type\":\"noul\",\"noul\":0.9}}}";
     private const string ChoiceResponse = "{\"answers\":{\"rank\":{\"type\":\"choice\",\"choice\":\"doc_1\",\"probabilities\":{\"doc_0\":0.1,\"doc_1\":0.9}}}}";
     private const string RerankResponse = "{\"results\":[{\"index\":1,\"relevance_score\":0.9},{\"index\":0,\"relevance_score\":0.1}]}";
-    private const string OpenAiPredicateResponse = "{\"answers\":[{\"type\":\"predicate\",\"name\":\"rel_0\",\"probability\":0.1},{\"type\":\"predicate\",\"name\":\"rel_1\",\"probability\":0.9}]}";
-    private const string OpenAiChoiceResponse = "{\"answers\":[{\"type\":\"choice\",\"name\":\"rank\",\"choice\":\"doc_1\",\"probabilities\":[{\"value\":\"doc_0\",\"probability\":0.1},{\"value\":\"doc_1\",\"probability\":0.9}]}]}";
+    private const string OpenAiScoreResponse = "{\"answers\":[{\"type\":\"score\",\"name\":\"rel_0\",\"score\":0.1},{\"type\":\"score\",\"name\":\"rel_1\",\"score\":2.9}]}";
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "LinkSearch.Tests", Guid.NewGuid().ToString("N"));
     private readonly LinkwardenLink[] _links =
     {
@@ -74,6 +73,73 @@ public sealed class RankingServiceTests : IDisposable
     }
 
     [Theory]
+    [InlineData("rerank", "rerank")]
+    [InlineData("system-one", "decision-noul")]
+    [InlineData("system-one", "decision-choice")]
+    [InlineData("openrouter", "decision-noul")]
+    [InlineData("openrouter", "decision-choice")]
+    [InlineData("openai", "decision-noul")]
+    [InlineData("openai", "decision-choice")]
+    public async Task Search_omits_only_empty_document_fields_for_every_provider(string provider, string mode)
+    {
+        var settings = CreateSettings(mode);
+        settings.SetForTest("linkSearch.DecisionProvider", provider == "rerank" ? "system-one" : provider);
+        settings.SetForTest("linkSearch.OpenRouterApiKey", "router-key");
+        settings.SetForTest("linkSearch.OpenAiApiKey", "openai-key");
+        var links = new[]
+        {
+            new LinkwardenLink("empty", "", "", "", Array.Empty<string>()),
+            new LinkwardenLink("whitespace", " \t ", "", "", new[] { "", " \t " }),
+            new LinkwardenLink("description", "  useful description  ", "", "", Array.Empty<string>()),
+            new LinkwardenLink("tags", "", "", "", new[] { "first tag", "second tag" }),
+            new LinkwardenLink("complete", "useful description", "", "", new[] { "useful tag" }),
+        };
+        var expected = new[]
+        {
+            $"Name: empty{Environment.NewLine}",
+            $"Name: whitespace{Environment.NewLine}",
+            $"Name: description{Environment.NewLine}Description:   useful description  {Environment.NewLine}",
+            $"Name: tags{Environment.NewLine}Tags: first tag, second tag{Environment.NewLine}",
+            $"Name: complete{Environment.NewLine}Description: useful description{Environment.NewLine}Tags: useful tag{Environment.NewLine}",
+        };
+        var response = provider switch
+        {
+            "rerank" => JsonSerializer.Serialize(new { results = links.Select((_, i) => new { index = i, relevance_score = 1.0 }) }),
+            "openai" => JsonSerializer.Serialize(new { answers = links.Select((_, i) => new { type = "score", name = $"rel_{i}", score = 1.0 }) }),
+            _ when mode == "decision-noul" => JsonSerializer.Serialize(new { answers = links.Select((_, i) => i).ToDictionary(i => $"rel_{i}", _ => new { type = "noul", noul = 0.5 }) }),
+            _ => JsonSerializer.Serialize(new { answers = new { rank = new { type = "choice", choice = "doc_0", probabilities = links.Select((_, i) => i).ToDictionary(i => $"doc_{i}", _ => 1.0 / links.Length) } } }),
+        };
+        string? body = null;
+        using var client = new HttpClient(new FakeHandler(async (request, token) =>
+        {
+            body = await request.Content!.ReadAsStringAsync(token);
+            return Response(response);
+        }));
+        using var service = new RerankService(settings, client);
+
+        var outcome = await service.RankLinksAsync("query", links);
+
+        Assert.Equal(RankingStatus.Applied, outcome.Status);
+        Assert.NotNull(body);
+        using var json = JsonDocument.Parse(body);
+        for (var i = 0; i < links.Length; i++)
+        {
+            var actual = provider switch
+            {
+                "rerank" => json.RootElement.GetProperty("documents")[i].GetString(),
+                "openai" => json.RootElement.GetProperty("questions")[i].GetProperty("instructions").GetString(),
+                _ when mode == "decision-noul" => json.RootElement.GetProperty("questions").GetProperty($"rel_{i}").GetProperty("instructions").GetString(),
+                _ => json.RootElement.GetProperty("questions").GetProperty("rank").GetProperty("criteria").GetProperty($"doc_{i}").GetString(),
+            };
+            Assert.NotNull(actual);
+            if (provider is "rerank" || mode == "decision-choice" && provider != "openai")
+                Assert.Equal(expected[i], actual);
+            else
+                Assert.EndsWith(expected[i], actual);
+        }
+    }
+
+    [Theory]
     [InlineData("openrouter", "decision-noul")]
     [InlineData("openrouter", "decision-choice")]
     [InlineData("openai", "decision-noul")]
@@ -97,8 +163,9 @@ public sealed class RankingServiceTests : IDisposable
             Assert.Equal(provider == "openai" ? "gpt-6-luna" : "typesafe/jev-1.14", json.RootElement.GetProperty("model").GetString());
             Assert.False(json.RootElement.TryGetProperty("stream", out _));
             Assert.Equal(provider == "openai" ? JsonValueKind.Array : JsonValueKind.Object, json.RootElement.GetProperty("questions").ValueKind);
+            if (provider == "openai") Assert.Equal("score", json.RootElement.GetProperty("questions")[0].GetProperty("type").GetString());
             return Response(provider == "openai"
-                ? mode == "decision-noul" ? OpenAiPredicateResponse : OpenAiChoiceResponse
+                ? OpenAiScoreResponse
                 : mode == "decision-noul" ? NoulResponse : ChoiceResponse);
         }));
         using var ranking = new RerankService(settings, client);
@@ -111,7 +178,7 @@ public sealed class RankingServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData("openai", "OpenAiApiUrl", "OpenAiApiKey", "https://gateway.example/v1/decisions", OpenAiPredicateResponse)]
+    [InlineData("openai", "OpenAiApiUrl", "OpenAiApiKey", "https://gateway.example/v1/decisions", OpenAiScoreResponse)]
     [InlineData("openrouter", "OpenRouterApiUrl", "OpenRouterApiKey", "https://gateway.example/api/alpha/decisions", NoulResponse)]
     public async Task Search_uses_provider_specific_gateway_endpoint(string provider, string urlSetting, string keySetting, string url, string payload)
     {
@@ -142,7 +209,7 @@ public sealed class RankingServiceTests : IDisposable
         using var client = new HttpClient(new FakeHandler((_, _) =>
         {
             calls++;
-            return Task.FromResult(Response("{\"answers\":[{\"type\":\"predicate\",\"name\":\"rel_0\",\"probability\":0.1},{\"type\":\"refusal\",\"name\":\"rel_1\"}]}"));
+            return Task.FromResult(Response("{\"answers\":[{\"type\":\"score\",\"name\":\"rel_0\",\"score\":0.1},{\"type\":\"refusal\",\"name\":\"rel_1\"}]}"));
         }));
         using var service = new RerankService(settings, client);
         Assert.Same(_links, await service.RerankLinksAsync("query", _links));
@@ -184,8 +251,45 @@ public sealed class RankingServiceTests : IDisposable
         }));
         using var service = new RerankService(settings, client);
 
-        Assert.Same(_links, await service.RerankLinksAsync("query", _links));
+        var outcome = await service.RankLinksAsync("query", _links);
+        Assert.Same(_links, outcome.Links);
+        Assert.Equal(RankingStatus.Failed, outcome.Status);
+        Assert.Equal(503, outcome.HttpStatusCode);
         Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task Candidate_limit_only_sends_the_prefix_and_preserves_the_remaining_order()
+    {
+        var settings = CreateSettings("rerank");
+        settings.SetForTest("linkSearch.RankingCandidateLimit", "2");
+        var links = _links.Concat(new[]
+        {
+            new LinkwardenLink("third", "third description", "https://example.com/3", "", Array.Empty<string>()),
+            new LinkwardenLink("fourth", "fourth description", "https://example.com/4", "", Array.Empty<string>()),
+        }).ToArray();
+        using var client = new HttpClient(new FakeHandler(async (request, token) =>
+        {
+            using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            Assert.Equal(2, json.RootElement.GetProperty("documents").GetArrayLength());
+            return Response("{\"results\":[{\"index\":3,\"relevance_score\":1},{\"index\":1,\"relevance_score\":0.9},{\"index\":0,\"relevance_score\":0.1}]}");
+        }));
+        using var service = new RerankService(settings, client);
+        var outcome = await service.RankLinksAsync("query", links);
+        Assert.Equal(RankingStatus.Applied, outcome.Status);
+        Assert.Equal(new[] { links[1], links[0], links[2], links[3] }, outcome.Links);
+    }
+
+    [Fact]
+    public async Task Missing_configuration_is_reported_without_network_request()
+    {
+        var settings = CreateSettings("decision-noul");
+        settings.SetForTest("linkSearch.DecisionApiKey", "");
+        using var client = new HttpClient(new FakeHandler((_, _) => throw new InvalidOperationException("Unexpected request")));
+        using var service = new RerankService(settings, client);
+        var outcome = await service.RankLinksAsync("query", _links);
+        Assert.Equal(RankingStatus.ConfigurationError, outcome.Status);
+        Assert.Same(_links, outcome.Links);
     }
 
     [Fact]

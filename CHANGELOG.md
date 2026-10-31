@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## [0.1.10] - 2026-10-31
+
+- Use Score for OpenAI decision ranking while preserving existing provider settings; retain Noul and Choice for OpenRouter and custom System One.
+- Add a provider-specific connection test, a configurable candidate limit, and visible ranking failures without switching providers.
+- Show original search results while ranking runs and cancel obsolete requests when the query changes.
+- Keep the default selection at the top when ranking changes the result order.
+- Include the search query in each OpenAI Score question to improve relevance.
+- Omit empty descriptions and tags from ranking requests across all providers.
+- Keep the settings page open when saving and testing a ranking service connection.
+- Update the English and Chinese ranking guides with Score requests, migration, privacy, and candidate-limit behavior.
+- Update x64 and ARM64 MSIX package versions to `0.1.10.0`.
 
 ## [0.1.9] - 2026-10-29
 
@@ -38,6 +48,7 @@
 - Remove the explicit System.Text.Json dependency and stale Toolkit package version.
 - Bump the MSIX package version to `0.1.5.0` and update README badges.
 
+[0.1.10]: https://github.com/AreChen/CmdPal-LinkSearch/releases/tag/v0.1.10
 [0.1.9]: https://github.com/AreChen/CmdPal-LinkSearch/releases/tag/v0.1.9
 [0.1.8]: https://github.com/AreChen/CmdPal-LinkSearch/releases/tag/v0.1.8
 [0.1.7]: https://github.com/AreChen/CmdPal-LinkSearch/releases/tag/v0.1.7

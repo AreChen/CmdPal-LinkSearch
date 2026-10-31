@@ -11,15 +11,21 @@
 
 ## 排序模式
 
-在设置中启用重排序并选择以下模式：
+在设置中启用重排序并选择服务：
 
 - **Rerank API**：使用兼容 rerank 接口的服务，保留已有 Rerank 设置。
-- **决策模型：逐项判断 (Noul / Predicate)**：分别判断每个候选的相关性。
-- **决策模型：候选选择 (Choice)**：比较所有候选，按返回的相对概率排序。
+- **OpenRouter** 或 **自建 System One**：选择逐项判断（Noul，推荐用于 Jev）或候选选择（Choice）。
+- **OpenAI**：使用 Score 对每个候选评分并排序。
 
-决策模式支持自建 System One、OpenRouter 和 OpenAI 官方 Decisions API。各服务的配置与密钥相互独立，原有 Rerank 设置保持不变。0.1.8 版本不包含 OpenAI 和 OpenRouter 预设。
+各服务的配置和密钥相互独立。旧版 OpenAI 配置会保留地址、模型和密钥，之前的逐项判断或候选选择会自动改用 Score；切回 OpenRouter 或自建服务时仍保留原来的决策模式。
 
-重排序时只发送搜索词以及候选的标题、描述、标签，不发送独立的链接地址和收藏夹字段；标题、描述或标签本身仍可能包含敏感内容。请求失败或决策响应不完整时，保留原始搜索顺序。Choice 一次比较全部候选，不会合并不同批次的概率；候选过多可能超过服务限制。
+重排序时只发送搜索词以及候选的标题、描述、标签，不发送独立的链接地址和收藏夹字段；为空或仅包含空白字符的描述和标签会省略。标题、描述或标签本身仍可能包含敏感内容。搜索先展示原始结果，排序完成后再更新；失败时首条结果显示错误并保留原始顺序，不会自动调用其他服务。更换搜索词时会尽量取消旧请求，但服务商可能已经处理或计费。
+
+保存设置之前，可以使用环境变量 `LINKSEARCH_ENABLE_RERANK=true` 启用重排。保存设置后，以设置页面中的重排开关为准，包括用户手动关闭的情况。
+
+**重排候选上限**默认为 50，与显示结果上限分开设置，实际范围为 2 至 200。扩展只在一次请求中重排 Linkwarden 返回的前 N 条，其余结果按原有相对顺序追加。减少候选可能降低延迟和费用，但排在范围之外的相关结果无法提升到已重排部分；Choice 不会合并不同批次的概率，请同时留意服务商的限制。
+
+点击 **保存并测试连接** 会先保存当前设置，再使用所选服务和协议发送两条虚构书签。这是真实请求，可能产生费用；测试期间设置表单暂不可编辑。
 
 以下 `curl` 示例使用 Bash 语法；Windows 用户可在 WSL 或 Git Bash 中运行，不能直接粘贴到 PowerShell。
 
@@ -71,12 +77,12 @@ curl --request POST 'https://rerank.example.com/v1/rerank' \
 
 ### 配置方式
 
-1. 启用重排序，选择 **逐项判断**（Noul / Predicate）或 **候选选择**（Choice）。未启用时不会显示重排序配置。
-2. 选择 **决策模型服务**，对应的配置字段会立即显示；填写地址、密钥和模型名后保存。OpenAI 和 OpenRouter 配置区提供官方配置教程及 Decisions 文档入口。
+1. 启用重排序并选择服务。未启用时不会显示重排序配置。
+2. 选择 OpenRouter 或自建 System One 后，再选择 **逐项判断**（Noul）或 **候选选择**（Choice）；OpenAI 自动使用 Score。对应配置字段会立即显示；填写地址、密钥和模型名后保存。OpenAI 和 OpenRouter 配置区提供官方配置教程及 Decisions 文档入口。
    - **自建 System One**：填写完整接口地址、密钥和模型名称。仍支持环境变量 `LINKSEARCH_DECISION_API_URL`、`LINKSEARCH_DECISION_API_KEY` 和 `LINKSEARCH_DECISION_MODEL_NAME`。
    - **OpenRouter**：默认接口为 `https://openrouter.ai/api/alpha/decisions`，默认模型为 `typesafe/jev-1.14`。未填写密钥时读取 `OPENROUTER_API_KEY`。
    - **OpenAI**：默认接口为 `https://api.openai.com/v1/decisions`，默认模型为 `gpt-6-luna`。未填写密钥时读取 `OPENAI_API_KEY`；账号和密钥需要有该模型的访问权限。
-3. 搜索至少返回两条结果的关键词，在选中服务的后台检查是否调用了预期模型。决策模式不使用 Rerank API 配置；服务必须支持所选模型和问题类型。
+3. 点击 **保存并测试连接**，再搜索至少返回两条结果的关键词，在所选服务后台检查是否调用了预期模型。决策服务不使用 Rerank API 配置；服务必须支持所选模型和问题类型。
 
 两个服务都可以填写兼容网关的**完整接口地址**，例如 OpenRouter 使用 `https://gateway.example/api/alpha/decisions`，OpenAI 使用 `https://gateway.example/v1/decisions`；请填写网关密钥，并确认网关支持相应模型和协议。密钥和书签数据会发送给配置的接口，请使用可信的 HTTPS 网关。地址留空时恢复官方默认地址。
 
@@ -182,49 +188,48 @@ curl --request POST 'https://openrouter.ai/api/alpha/decisions' \
 
 ### OpenAI Decisions
 
-[OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) 使用 `input`，问题和回答是带名称的数组。逐项判断使用 `predicate`：
+[OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) 使用 `input`，问题和回答是带名称的数组。扩展为每个候选发送一个 `score` 问题，使用四个由低到高的相关性等级，并在每个问题中重复查询。候选越多或查询越长，额外输入 token 越多：
 
 ```bash
 curl --request POST 'https://api.openai.com/v1/decisions' \
   --header "Authorization: Bearer $OPENAI_API_KEY" \
   --header 'Content-Type: application/json' \
-  --data '{
+  --data-binary @- <<'JSON'
+  {
     "model": "gpt-6-luna",
     "input": "python packaging",
     "questions": [
-      { "type": "predicate", "name": "rel_0", "instructions": "Is this bookmark relevant to the query? Name: Python Packaging User Guide\nDescription: Packaging Python projects\nTags: python, packaging" },
-      { "type": "predicate", "name": "rel_1", "instructions": "Is this bookmark relevant to the query? Name: The Rust Book\nDescription: Learn Rust\nTags: rust" }
+      { "type": "score", "name": "rel_0", "instructions": "How well does this bookmark address the user's search query? Search query: python packaging. Name: Python Packaging User Guide\nDescription: Packaging Python projects\nTags: python, packaging\n",
+        "levels": [
+          { "label": "unrelated", "description": "Does not address the user's requested subject or task." },
+          { "label": "weak", "description": "Related to the subject but does not address the requested task." },
+          { "label": "partial", "description": "Addresses part of the requested task but misses an important requirement." },
+          { "label": "direct", "description": "Directly addresses the specific subject and task in the query." }
+        ] },
+      { "type": "score", "name": "rel_1", "instructions": "How well does this bookmark address the user's search query? Search query: python packaging. Name: The Rust Book\nDescription: Learn Rust\nTags: rust\n",
+        "levels": [
+          { "label": "unrelated", "description": "Does not address the user's requested subject or task." },
+          { "label": "weak", "description": "Related to the subject but does not address the requested task." },
+          { "label": "partial", "description": "Addresses part of the requested task but misses an important requirement." },
+          { "label": "direct", "description": "Directly addresses the specific subject and task in the query." }
+        ] }
     ]
-  }'
+  }
+JSON
 ```
 
 ```json
 { "answers": [
-  { "type": "predicate", "name": "rel_0", "probability": 0.93 },
-  { "type": "predicate", "name": "rel_1", "probability": 0.17 }
+  { "type": "score", "name": "rel_0", "score": 2.85 },
+  { "type": "score", "name": "rel_1", "score": 0.12 }
 ] }
 ```
 
-Choice 模式使用相同的 `model` 和 `input`，将 `questions` 替换为：
-
-```json
-[{ "type": "choice", "name": "rank", "instructions": "Which bookmark is most relevant to the query?",
-   "choices": [
-     { "value": "doc_0", "description": "Name: Python Packaging User Guide\nDescription: Packaging Python projects\nTags: python, packaging" },
-     { "value": "doc_1", "description": "Name: The Rust Book\nDescription: Learn Rust\nTags: rust" }
-   ] }]
-```
-
-```json
-{ "answers": [{ "type": "choice", "name": "rank", "choice": "doc_0", "confidence": 0.93,
-  "probabilities": [{ "value": "doc_0", "probability": 0.93 }, { "value": "doc_1", "probability": 0.07 }] }] }
-```
-
-扩展通过 `name` 匹配回答、通过 `value` 匹配候选概率。模型拒答、回答或概率缺失、数值无效时保留原始顺序。OpenAI Choice 接受 2 至 255 个候选，LinkSearch 的搜索结果上限为 200 条。
+扩展通过 `name` 匹配回答，每个候选都需要一个 0 至 3 之间的有限 `score`；分数越高排序越靠前，相同分数保持原顺序。模型拒答、回答缺失或分数无效时保留原始顺序；额外的响应元数据会被忽略。
 
 ## 排查问题
 
-- 后台没有请求时，请确认已启用重排序并保存，然后搜索至少返回两条结果的关键词；检查当前选择的模式、接口地址、密钥和模型名。
+- 后台没有请求时，请启用重排序并点击 **保存并测试连接**，检查所选服务、接口地址、密钥和模型名，然后搜索至少返回两条结果的关键词。
 - 每个决策服务使用独立配置，决策模式不会使用 Rerank API 的配置。
-- 请求失败，或决策响应不完整、格式无效时，扩展会保留原始顺序。请检查服务日志和返回格式；Choice 模式需要每个候选的概率。
+- 排序失败时，首条结果会显示错误，扩展保留原始顺序。请检查服务日志和返回格式；Choice 模式需要每个候选的概率，Score 需要每个候选的有效分数。
 - Rerank 结果按服务返回的顺序显示，请确认服务已对 `results` 数组排序。

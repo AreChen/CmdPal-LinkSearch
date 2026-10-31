@@ -74,20 +74,20 @@
 3. Configure your preferred shortcut key for the extension.
 4. Configure Linkwarden server address, access token, and maximum search result count.
 5. Choose the interface language: Auto, Simplified Chinese, or English.
-6. Optional: enable reranking, choose a mode and service, and fill in its configuration section.
+6. Optional: enable reranking, choose a service, fill in its configuration, and use **Save and test connection**.
 7. Enter the shortcut key and start searching.
 
 ## Ranking Modes
 
-Enable reranking in the settings and choose one of these modes:
+Enable ranking in the settings and choose a service:
 
 - **Rerank API**: use a compatible rerank endpoint with your existing rerank settings.
-- **Decision model: per item (Noul / Predicate)**: assess each candidate independently.
-- **Decision model: Choice**: compare all candidates and order them by relative probability.
+- **OpenRouter** or **custom System One**: choose per-item Noul or Choice.
+- **OpenAI**: rank candidates with Score.
 
-Decision modes support custom System One, OpenRouter, and the official OpenAI Decisions API. Each provider has separate settings and credentials; the Rerank API settings remain unchanged. OpenAI and OpenRouter presets are not available in version 0.1.8.
+Each service has separate settings and credentials. Existing OpenAI configurations retain their endpoint, key, and model while switching to Score.
 
-Ranking sends the query and each candidate's title, description, and tags, not the separate URL or collection fields. Titles, descriptions, or tags may themselves contain sensitive information. If the request fails or the decision response is incomplete, the original search order is retained. Choice compares all candidates in one request; probabilities from separate batches are not combined, and a large candidate set may exceed the service's limits.
+Ranking sends the query and candidate titles, descriptions, and tags to the selected service; these fields may contain sensitive information. Results appear immediately and update after ranking. Failures retain the original order and show an error. The candidate limit defaults to 50 and can be adjusted independently of the display limit.
 
 For configuration, request formats, and examples, see the [Ranking API Guide](./docs/ranking.md).
 

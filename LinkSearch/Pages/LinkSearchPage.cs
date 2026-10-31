@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Threading;
 using Microsoft.CommandPalette.Extensions;
@@ -127,6 +128,7 @@ namespace LinkSearch
     internal sealed partial class LinkSearchPage : DynamicListPage, System.IDisposable
     {
         private const int PreserveSelectionRefresh = -2;
+        private const int StandardRefresh = -1;
         private const int MinimumSearchQueryLength = 2;
 
         private List<IListItem> _allItems = new List<IListItem>();
@@ -138,6 +140,7 @@ namespace LinkSearch
         private readonly RerankConnectionTestService _rerankConnectionTestService;
         private readonly SearchResultPresenter _presenter;
         private readonly object _searchDebounceLock = new object();
+        private CancellationTokenSource? _activeSearchCts;
         private System.Threading.Timer? _searchDebounceTimer;
         private bool _hasScheduledSearch;
         private long _scheduledSearchVersion;
@@ -200,17 +203,25 @@ namespace LinkSearch
             Name = _settingsManager.Text(LocalizedTextKey.PageName);
             PlaceholderText = _settingsManager.Text(LocalizedTextKey.SearchPlaceholder);
             EmptyContent = _presenter.CreateEmptyResultItem();
-            var queryVersion = Interlocked.Increment(ref _currentQueryVersion);
-            
-            if (IsEmptyQuery(_currentQuery))
+            long queryVersion;
+            string query;
+            CancellationTokenSource? previous;
+            lock (_searchDebounceLock)
             {
-                StopDebouncedSearch();
-                _allItems = new List<IListItem> { _presenter.CreateEmptyQueryItem() };
-                RaiseItemsChangedOnUiThread();
+                query = _currentQuery;
+                queryVersion = Interlocked.Increment(ref _currentQueryVersion);
+                previous = _activeSearchCts;
+                _activeSearchCts = null;
+            }
+            CancelSearch(previous);
+            
+            if (IsEmptyQuery(query))
+            {
+                StopDebouncedSearch(queryVersion);
+                PublishItems(queryVersion, new[] { _presenter.CreateEmptyQueryItem() });
             }
             else
             {
-                // 重新安排防抖搜索；已发出的旧请求自然完成，结果会被版本号丢弃。
                 ScheduleDebouncedSearch(queryVersion);
             }
         }
@@ -254,12 +265,20 @@ namespace LinkSearch
         public override void UpdateSearchText(string oldSearch, string newSearch)
         {
             var effectiveNewSearch = newSearch ?? string.Empty;
-            _currentQuery = effectiveNewSearch;
-            var queryVersion = Interlocked.Increment(ref _currentQueryVersion);
+            long queryVersion;
+            CancellationTokenSource? previous;
+            lock (_searchDebounceLock)
+            {
+                _currentQuery = effectiveNewSearch;
+                queryVersion = Interlocked.Increment(ref _currentQueryVersion);
+                previous = _activeSearchCts;
+                _activeSearchCts = null;
+            }
+            CancelSearch(previous);
 
             if (IsEmptyQuery(effectiveNewSearch))
             {
-                StopDebouncedSearch();
+                StopDebouncedSearch(queryVersion);
                 QueueEmptyQueryUpdate(queryVersion);
                 return;
             }
@@ -323,10 +342,11 @@ namespace LinkSearch
             }
         }
 
-        private void StopDebouncedSearch()
+        private void StopDebouncedSearch(long queryVersion)
         {
             lock (_searchDebounceLock)
             {
+                if (queryVersion != Interlocked.Read(ref _currentQueryVersion)) return;
                 _hasScheduledSearch = false;
                 _searchDebounceTimer?.Change(Timeout.Infinite, Timeout.Infinite);
             }
@@ -335,6 +355,8 @@ namespace LinkSearch
         private void StartDebouncedSearch()
         {
             long queryVersion;
+            string query;
+            CancellationTokenSource source;
 
             lock (_searchDebounceLock)
             {
@@ -352,20 +374,17 @@ namespace LinkSearch
 
                 _hasScheduledSearch = false;
                 queryVersion = _scheduledSearchVersion;
+                query = _currentQuery;
+                if (queryVersion != Interlocked.Read(ref _currentQueryVersion) || IsEmptyQuery(query) ||
+                    Interlocked.Exchange(ref _lastStartedSearchVersion, queryVersion) == queryVersion)
+                {
+                    return;
+                }
+                source = new CancellationTokenSource();
+                _activeSearchCts = source;
             }
 
-            if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
-            {
-                return;
-            }
-
-            var query = _currentQuery;
-            if (IsEmptyQuery(query) || Interlocked.Exchange(ref _lastStartedSearchVersion, queryVersion) == queryVersion)
-            {
-                return;
-            }
-
-            var task = ExecuteSearchAsync(query, queryVersion);
+            var task = ExecuteSearchAsync(query, queryVersion, source);
             task.ContinueWith(tt =>
             {
                 if (tt.IsFaulted)
@@ -375,7 +394,19 @@ namespace LinkSearch
             }, TaskScheduler.Default);
         }
 
-        private void RaiseItemsChangedOnUiThread()
+        private static void CancelSearch(CancellationTokenSource? source)
+        {
+            try
+            {
+                source?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The search can finish between detaching and cancelling its source.
+            }
+        }
+
+        private void RaiseItemsChangedOnUiThread(int refreshMode)
         {
             try
             {
@@ -383,14 +414,13 @@ namespace LinkSearch
                 {
                     _syncContext.Post(_ =>
                     {
-                        try { RaiseItemsChanged(PreserveSelectionRefresh); }
+                        try { RaiseItemsChanged(refreshMode); }
                         catch (Exception ex2) { Log.Error($"RaiseItemsChanged 调用失败: {ex2.Message}"); }
                     }, null);
                 }
                 else
                 {
-                    // -2 matches CmdPal's incremental refresh mode, preserving selection during async result updates.
-                    RaiseItemsChanged(PreserveSelectionRefresh);
+                    RaiseItemsChanged(refreshMode);
                 }
             }
             catch (Exception ex)
@@ -403,17 +433,56 @@ namespace LinkSearch
         {
             try
             {
-                // 清除之前的错误信息
                 _lastErrorMessage = string.Empty;
-                var items = await GetItemsAsync(query, cancellationToken).ConfigureAwait(false);
-                if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
+                if (IsEmptyQuery(query))
                 {
+                    PublishItems(queryVersion, new[] { _presenter.CreateEmptyQueryItem() });
                     return;
                 }
 
-                _allItems = items;
-                // 确保在 UI 同步上下文中触发 RaiseItemsChanged，避免跨线程更新导致崩溃/快捷键失效
-                RaiseItemsChangedOnUiThread();
+                var searchResult = await _linkwardenService.SearchAsync(query, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (searchResult.Error is not null)
+                {
+                    PublishItems(queryVersion, _presenter.CreateErrorItems(searchResult.Error));
+                    return;
+                }
+
+                var links = searchResult.Links;
+                var existingItems = new Dictionary<LinkwardenLink, IListItem>(ReferenceEqualityComparer.Instance);
+                var originalItems = _presenter.CreateResultItems(links, existingItems);
+                PublishItems(queryVersion, originalItems);
+
+                if (links.Count > 1 && _settingsManager.EnableRerank && queryVersion == Interlocked.Read(ref _currentQueryVersion))
+                {
+                    var outcome = await _rerankService.RankLinksAsync(query, links, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
+                    {
+                        return;
+                    }
+
+                    var rankedItems = _presenter.CreateResultItems(outcome.Links, existingItems).ToArray();
+                    if (rankedItems.FirstOrDefault() is ListItem first)
+                    {
+                        var status = outcome.Status switch
+                        {
+                            RankingStatus.Applied => _settingsManager.Text(LocalizedTextKey.RankingApplied),
+                            RankingStatus.ConfigurationError => _settingsManager.Text(LocalizedTextKey.RankingFailedConfiguration),
+                            RankingStatus.Failed when outcome.HttpStatusCode is { } code => _settingsManager.Format(LocalizedTextKey.RankingFailedHttp, code),
+                            RankingStatus.Failed => _settingsManager.Text(LocalizedTextKey.RankingFailed),
+                            _ => string.Empty,
+                        };
+                        if (!string.IsNullOrEmpty(status))
+                        {
+                            first.Subtitle = $"{status} | {first.Subtitle}";
+                        }
+                    }
+                    // A standard refresh lets CmdPal update its default selection after a reorder.
+                    var orderChanged = outcome.Status == RankingStatus.Applied &&
+                        !originalItems.SequenceEqual(rankedItems, ReferenceEqualityComparer.Instance);
+                    PublishItems(queryVersion, rankedItems, orderChanged);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -437,7 +506,7 @@ namespace LinkSearch
 #endif
                 
                 // 显示错误信息
-                _allItems = new List<IListItem>
+                PublishItems(queryVersion, new List<IListItem>
                 {
                     new ListItem(new NoOpCommand())
                     {
@@ -445,43 +514,37 @@ namespace LinkSearch
                         Subtitle = "请稍后重试或检查设置",
                         Icon = Icons.LinkSearchExtIcon
                     }
-                };
-                // 确保在 UI 同步上下文中触发 RaiseItemsChanged，避免跨线程问题
-                RaiseItemsChangedOnUiThread();
+                });
 
             }
         }
         
-        private async System.Threading.Tasks.Task ExecuteSearchAsync(string query, long queryVersion)
+        private void PublishItems(long queryVersion, IReadOnlyList<IListItem> items, bool orderChanged = false)
         {
-            // 查询版本预验证：过期查询不应发起网络请求。
-            if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
+            lock (_searchDebounceLock)
             {
-#if DEBUG
-                Log.Debug($"查询预验证失败，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
-#endif
-                return; // 查询已过期，取消搜索
-            }
-
-            try
-            {
-                if (IsEmptyQuery(query))
+                if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
                 {
                     return;
                 }
+                _allItems = new List<IListItem>(items);
+            }
+            RaiseItemsChangedOnUiThread(orderChanged ? StandardRefresh : PreserveSelectionRefresh);
+        }
 
-                if (queryVersion != Interlocked.Read(ref _currentQueryVersion))
+        private async System.Threading.Tasks.Task ExecuteSearchAsync(string query, long queryVersion, CancellationTokenSource source)
+        {
+            try
+            {
+                if (IsEmptyQuery(query) || queryVersion != Interlocked.Read(ref _currentQueryVersion))
                 {
-#if DEBUG
-                    Log.Debug($"查询已过期，当前版本: {_currentQueryVersion}, 请求版本: {queryVersion}");
-#endif
-                    return; // 查询已过期，取消搜索
+                    return;
                 }
 
 #if DEBUG
                 Log.Debug($"执行搜索，查询: {query}, 版本: {queryVersion}");
 #endif
-                await UpdateItemsAsync(query, queryVersion, System.Threading.CancellationToken.None).ConfigureAwait(false);
+                await UpdateItemsAsync(query, queryVersion, source.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -506,47 +569,25 @@ namespace LinkSearch
 #endif
                 // 记录其他异常
             }
-        }
-        
-        private async System.Threading.Tasks.Task<List<IListItem>> GetItemsAsync(string query, System.Threading.CancellationToken cancellationToken = default)
-        {
-            try
+            finally
             {
-                if (IsEmptyQuery(query))
+                lock (_searchDebounceLock)
                 {
-                    return new List<IListItem> { _presenter.CreateEmptyQueryItem() };
+                    if (ReferenceEquals(_activeSearchCts, source))
+                    {
+                        _activeSearchCts = null;
+                    }
                 }
-
-                var searchResult = await _linkwardenService.SearchAsync(query, cancellationToken).ConfigureAwait(false);
-                if (searchResult.Error is not null)
-                {
-                    return new List<IListItem>(_presenter.CreateErrorItems(searchResult.Error));
-                }
-
-                var links = searchResult.Links;
-                if (_settingsManager.EnableRerank)
-                {
-                    links = await _rerankService.RerankLinksAsync(query, links, cancellationToken).ConfigureAwait(false);
-                }
-
-                var resultItems = new List<IListItem>(_presenter.CreateResultItems(links));
-                return resultItems;
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                Log.Debug($"Search failed: {ex.Message}");
-                var error = new LinkwardenSearchError(LinkwardenSearchErrorKind.Unexpected, LocalizedTextKey.ApiCallException, ex.Message);
-                return new List<IListItem>(_presenter.CreateErrorItems(error));
+                source.Dispose();
             }
         }
         
         public override IListItem[] GetItems()
         {
-            return _allItems.ToArray();
+            lock (_searchDebounceLock)
+            {
+                return _allItems.ToArray();
+            }
         }
         
         /// <summary>
@@ -554,11 +595,17 @@ namespace LinkSearch
         /// </summary>
         public void Dispose()
         {
+            CancellationTokenSource? previous;
             lock (_searchDebounceLock)
             {
+                Interlocked.Increment(ref _currentQueryVersion);
+                previous = _activeSearchCts;
+                _activeSearchCts = null;
+                _hasScheduledSearch = false;
                 _searchDebounceTimer?.Dispose();
                 _searchDebounceTimer = null;
             }
+            CancelSearch(previous);
 
             // 取消订阅设置变更事件
             if (_settingsManager != null)

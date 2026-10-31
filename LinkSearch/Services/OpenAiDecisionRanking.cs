@@ -8,7 +8,15 @@ namespace LinkSearch.Services;
 
 internal static class OpenAiDecisionRanking
 {
-    internal static byte[] CreateRequest(RankingMode mode, string model, string query, IReadOnlyList<string> documents)
+    private static readonly (string Label, string Description)[] Levels =
+    [
+        ("unrelated", "Does not address the user's requested subject or task."),
+        ("weak", "Related to the subject but does not address the requested task."),
+        ("partial", "Addresses part of the requested task but misses an important requirement."),
+        ("direct", "Directly addresses the specific subject and task in the query."),
+    ];
+
+    internal static byte[] CreateRequest(string model, string query, IReadOnlyList<string> documents)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -17,40 +25,23 @@ internal static class OpenAiDecisionRanking
             writer.WriteString("model", model);
             writer.WriteString("input", query);
             writer.WriteStartArray("questions");
-            if (mode == RankingMode.DecisionNoul)
-            {
-                for (var i = 0; i < documents.Count; i++)
-                {
-                    writer.WriteStartObject();
-                    writer.WriteString("type", "predicate");
-                    writer.WriteString("name", $"rel_{i}");
-                    writer.WriteString("instructions", $"Is this bookmark relevant to the query? {documents[i]}");
-                    writer.WriteEndObject();
-                }
-            }
-            else if (mode == RankingMode.DecisionChoice)
+            for (var i = 0; i < documents.Count; i++)
             {
                 writer.WriteStartObject();
-                writer.WriteString("type", "choice");
-                writer.WriteString("name", "rank");
-                writer.WriteString("instructions", "Which bookmark is most relevant to the query?");
-                writer.WriteStartArray("choices");
-                for (var i = 0; i < documents.Count; i++)
+                writer.WriteString("type", "score");
+                writer.WriteString("name", $"rel_{i}");
+                writer.WriteString("instructions", $"How well does this bookmark address the user's search query? Search query: {query}. {documents[i]}");
+                writer.WriteStartArray("levels");
+                foreach (var (label, description) in Levels)
                 {
                     writer.WriteStartObject();
-                    writer.WriteString("value", $"doc_{i}");
-                    writer.WriteString("description", documents[i]);
+                    writer.WriteString("label", label);
+                    writer.WriteString("description", description);
                     writer.WriteEndObject();
                 }
-
                 writer.WriteEndArray();
                 writer.WriteEndObject();
             }
-            else
-            {
-                throw new ArgumentOutOfRangeException(nameof(mode));
-            }
-
             writer.WriteEndArray();
             writer.WriteEndObject();
         }
@@ -58,77 +49,31 @@ internal static class OpenAiDecisionRanking
         return stream.ToArray();
     }
 
-    internal static bool TryParseResponse(JsonElement root, RankingMode mode, int documentCount, out RerankResponse? response)
+    internal static bool TryParseResponse(JsonElement root, int documentCount, out RerankResponse? response)
     {
         response = null;
         if (documentCount <= 0 || root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("answers", out var answers) || answers.ValueKind != JsonValueKind.Array)
+            !root.TryGetProperty("answers", out var answers) || answers.ValueKind != JsonValueKind.Array ||
+            answers.GetArrayLength() != documentCount)
         {
             return false;
         }
 
         var results = new RerankResult[documentCount];
-        if (mode == RankingMode.DecisionNoul)
+        var seen = new bool[documentCount];
+        foreach (var answer in answers.EnumerateArray())
         {
-            if (answers.GetArrayLength() != documentCount)
+            if (answer.ValueKind != JsonValueKind.Object ||
+                !answer.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "score" ||
+                !TryIndex(answer, documentCount, out var index) || seen[index] ||
+                !answer.TryGetProperty("score", out var value) || value.ValueKind != JsonValueKind.Number ||
+                !value.TryGetDouble(out var score) || !double.IsFinite(score) || score < 0 || score > Levels.Length - 1)
             {
                 return false;
             }
 
-            var seen = new bool[documentCount];
-            foreach (var answer in answers.EnumerateArray())
-            {
-                if (!HasType(answer, "predicate") || !TryIndex(answer, "name", "rel_", documentCount, out var index) ||
-                    seen[index] || !TryProbability(answer, "probability", out var score))
-                {
-                    return false;
-                }
-
-                seen[index] = true;
-                results[index] = RerankResult.Create(index, score);
-            }
-        }
-        else if (mode == RankingMode.DecisionChoice)
-        {
-            if (answers.GetArrayLength() != 1)
-            {
-                return false;
-            }
-
-            var answer = answers[0];
-            if (!HasType(answer, "choice") || !answer.TryGetProperty("name", out var name) ||
-                name.ValueKind != JsonValueKind.String || name.GetString() != "rank" ||
-                !TryIndex(answer, "choice", "doc_", documentCount, out _) ||
-                !answer.TryGetProperty("probabilities", out var probabilities) || probabilities.ValueKind != JsonValueKind.Array ||
-                probabilities.GetArrayLength() != documentCount)
-            {
-                return false;
-            }
-
-            var seen = new bool[documentCount];
-            var sum = 0.0;
-            foreach (var probability in probabilities.EnumerateArray())
-            {
-                if (probability.ValueKind != JsonValueKind.Object ||
-                    !TryIndex(probability, "value", "doc_", documentCount, out var index) || seen[index] ||
-                    !TryProbability(probability, "probability", out var score))
-                {
-                    return false;
-                }
-
-                seen[index] = true;
-                sum += score;
-                results[index] = RerankResult.Create(index, score);
-            }
-
-            if (Math.Abs(sum - 1.0) > 0.001)
-            {
-                return false;
-            }
-        }
-        else
-        {
-            return false;
+            seen[index] = true;
+            results[index] = RerankResult.Create(index, score);
         }
 
         Array.Sort(results, (left, right) =>
@@ -140,28 +85,17 @@ internal static class OpenAiDecisionRanking
         return true;
     }
 
-    private static bool HasType(JsonElement value, string expected) =>
-        value.ValueKind == JsonValueKind.Object && value.TryGetProperty("type", out var type) &&
-        type.ValueKind == JsonValueKind.String && type.GetString() == expected;
-
-    private static bool TryIndex(JsonElement value, string property, string prefix, int count, out int index)
+    private static bool TryIndex(JsonElement answer, int count, out int index)
     {
         index = -1;
-        if (!value.TryGetProperty(property, out var name) || name.ValueKind != JsonValueKind.String)
+        if (!answer.TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String)
         {
             return false;
         }
 
         var text = name.GetString();
-        return text is not null && text.StartsWith(prefix, StringComparison.Ordinal) &&
-            int.TryParse(text.AsSpan(prefix.Length), out index) && index >= 0 && index < count &&
-            string.Equals(text, $"{prefix}{index}", StringComparison.Ordinal);
-    }
-
-    private static bool TryProbability(JsonElement value, string property, out double probability)
-    {
-        probability = 0;
-        return value.TryGetProperty(property, out var number) && number.ValueKind == JsonValueKind.Number &&
-            number.TryGetDouble(out probability) && double.IsFinite(probability) && probability >= 0 && probability <= 1;
+        return text is not null && text.StartsWith("rel_", StringComparison.Ordinal) &&
+            int.TryParse(text.AsSpan(4), out index) && index >= 0 && index < count &&
+            string.Equals(text, $"rel_{index}", StringComparison.Ordinal);
     }
 }

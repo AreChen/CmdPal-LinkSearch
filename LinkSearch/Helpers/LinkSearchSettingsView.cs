@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
 using LinkSearch.Localization;
 using LinkSearch.Models;
+using LinkSearch.Services;
 using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
@@ -23,40 +27,153 @@ internal sealed partial class LinkSearchSettingsView : ICommandSettings, IDispos
 
     public IContentPage SettingsPage => _page;
 
-    private void OnSettingsChanged(object? sender, Settings args) => _page.Refresh();
+    private void OnSettingsChanged(object? sender, Settings args) => _page.SettingsChanged();
 
-    public void Dispose() => _manager.Settings.SettingsChanged -= OnSettingsChanged;
+    public void Dispose()
+    {
+        _manager.Settings.SettingsChanged -= OnSettingsChanged;
+        _page.StopConnectionTest();
+    }
 }
 
 internal sealed partial class LinkSearchSettingsPage : ContentPage
 {
     private readonly SettingsManager _manager;
+    private readonly SynchronizationContext? _syncContext = SynchronizationContext.Current;
+    private readonly object _testLock = new();
+    private readonly Func<CancellationToken, Task<RerankConnectionTestResult>> _testConnection;
+    private CancellationTokenSource? _testCts;
+    private long _testVersion;
+    private bool _testing;
+    private string? _testMessage;
 
-    internal LinkSearchSettingsPage(SettingsManager manager)
+    internal LinkSearchSettingsPage(SettingsManager manager, Func<CancellationToken, Task<RerankConnectionTestResult>>? testConnection = null)
     {
         _manager = manager;
+        _testConnection = testConnection ?? TestConnectionAsync;
         Name = "LinkSearch";
         Icon = new IconInfo("\uE713");
     }
 
-    public override IContent[] GetContent() => [new LinkSearchSettingsForm(_manager)];
+    public override IContent[] GetContent()
+    {
+        lock (_testLock)
+        {
+            return [new LinkSearchSettingsForm(_manager, this, _testing, _testMessage)];
+        }
+    }
 
     internal void Refresh() => RaiseItemsChanged();
+
+    internal void SettingsChanged()
+    {
+        StopConnectionTest();
+        Refresh();
+    }
+
+    internal void StopConnectionTest()
+    {
+        CancellationTokenSource? previous;
+        lock (_testLock)
+        {
+            _testVersion++;
+            previous = _testCts;
+            _testCts = null;
+            _testing = false;
+            _testMessage = null;
+        }
+        try { previous?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    internal void CancelConnectionTest()
+    {
+        StopConnectionTest();
+        lock (_testLock)
+        {
+            _testMessage = _manager.Text(LocalizedTextKey.RerankConnectionCanceled);
+        }
+        Refresh();
+    }
+
+    internal void StartConnectionTest()
+    {
+        CancellationTokenSource source;
+        long version;
+        lock (_testLock)
+        {
+            if (_testing) return;
+            version = ++_testVersion;
+            source = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            _testCts = source;
+            _testing = true;
+            _testMessage = _manager.Text(LocalizedTextKey.SettingsTestingConnection);
+        }
+        Refresh();
+        _ = Task.Run(() => CompleteConnectionTestAsync(version, source));
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "The existing connection test uses the same serializer as normal ranking.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The existing connection test uses the same serializer as normal ranking.")]
+    private async Task<RerankConnectionTestResult> TestConnectionAsync(CancellationToken token)
+    {
+        using var service = new RerankConnectionTestService(_manager);
+        return await service.TestConnectionAsync(token).ConfigureAwait(false);
+    }
+
+    private async Task CompleteConnectionTestAsync(long version, CancellationTokenSource source)
+    {
+        string message;
+        try
+        {
+            var result = await _testConnection(source.Token).ConfigureAwait(false);
+            if (source.IsCancellationRequested && result.ErrorType == "Canceled")
+            {
+                result = RerankConnectionTestResult.CreateFailure("TimeoutError", "Connection test timed out");
+            }
+            message = result.IsSuccess
+                ? _manager.Format(LocalizedTextKey.RerankConnectionSuccess, result.ResponseTimeMs)
+                : RerankConnectionMessageFormatter.FormatFailure(result, _manager.CurrentUiLanguage);
+        }
+        catch (Exception)
+        {
+            message = _manager.Text(LocalizedTextKey.RankingFailed);
+        }
+        finally
+        {
+            source.Dispose();
+        }
+
+        lock (_testLock)
+        {
+            if (version != _testVersion) return;
+            _testCts = null;
+            _testing = false;
+            _testMessage = message;
+        }
+        if (_syncContext is null) Refresh();
+        else _syncContext.Post(_ => Refresh(), null);
+    }
 }
 
 internal sealed partial class LinkSearchSettingsForm : FormContent
 {
     private readonly SettingsManager _manager;
+    private readonly LinkSearchSettingsPage? _page;
     private readonly FormContent _settingsForm;
     private readonly string _baseTemplate;
     private readonly JsonObject _draft = new();
     private bool _enabled;
     private RankingMode _mode;
     private DecisionProvider _provider;
+    private readonly bool _testing;
+    private readonly string? _testMessage;
 
-    internal LinkSearchSettingsForm(SettingsManager manager)
+    internal LinkSearchSettingsForm(SettingsManager manager, LinkSearchSettingsPage? page = null, bool testing = false, string? testMessage = null)
     {
         _manager = manager;
+        _page = page;
+        _testing = testing;
+        _testMessage = testMessage;
         _settingsForm = (FormContent)manager.Settings.ToContent()[0];
         _baseTemplate = _settingsForm.TemplateJson;
         DataJson = _settingsForm.DataJson;
@@ -102,6 +219,9 @@ internal sealed partial class LinkSearchSettingsForm : FormContent
         var value = action?["value"]?.GetValue<string>();
         switch (operation)
         {
+            case "cancel-test":
+                _page?.CancelConnectionTest();
+                return CommandResult.KeepOpen();
             case "toggle":
                 _enabled = !_enabled;
                 break;
@@ -121,12 +241,39 @@ internal sealed partial class LinkSearchSettingsForm : FormContent
                     _ => DecisionProvider.SystemOne,
                 };
                 break;
+            case "backend":
+                if (value == "rerank")
+                {
+                    _mode = RankingMode.Rerank;
+                }
+                else
+                {
+                    if (_mode == RankingMode.Rerank)
+                    {
+                        _mode = RankingMode.DecisionNoul;
+                    }
+                    _provider = value switch
+                    {
+                        "openrouter" => DecisionProvider.OpenRouter,
+                        "openai" => DecisionProvider.OpenAi,
+                        _ => DecisionProvider.SystemOne,
+                    };
+                }
+                break;
             case null:
             case "save":
+            case "test":
                 _draft["linkSearch.EnableRerank"] = _enabled ? "true" : "false";
+                _draft["linkSearch.RankingEnabledExplicitlySet"] = "true";
                 _draft["linkSearch.RankingMode"] = ModeValue(_mode);
                 _draft["linkSearch.DecisionProvider"] = ProviderValue(_provider);
-                return _settingsForm.SubmitForm(_draft.ToJsonString(), "{}");
+                var result = _settingsForm.SubmitForm(_draft.ToJsonString(), "{}");
+                if (operation == "test")
+                {
+                    if (_enabled) _page?.StartConnectionTest();
+                    return CommandResult.KeepOpen();
+                }
+                return result;
             default:
                 return CommandResult.KeepOpen();
         }
@@ -135,7 +282,7 @@ internal sealed partial class LinkSearchSettingsForm : FormContent
         return CommandResult.KeepOpen();
     }
 
-    private void Render() => TemplateJson = SettingsLayout.Organize(_baseTemplate, _manager, _draft, _enabled, _mode, _provider);
+    private void Render() => TemplateJson = SettingsLayout.Organize(_baseTemplate, _manager, _draft, _enabled, _mode, _provider, _testing, _testMessage);
 
     internal static string ModeValue(RankingMode mode) => mode switch
     {
@@ -156,16 +303,27 @@ internal static class SettingsLayout
 {
     private static readonly HashSet<string> ManagedFields = new(StringComparer.Ordinal)
     {
-        "linkSearch.EnableRerank", "linkSearch.RankingMode", "linkSearch.DecisionProvider",
+        "linkSearch.EnableRerank", "linkSearch.RankingEnabledExplicitlySet", "linkSearch.RankingMode", "linkSearch.DecisionProvider",
         "linkSearch.RerankApiUrl", "linkSearch.RerankApiKey", "linkSearch.RerankModelName",
         "linkSearch.DecisionApiUrl", "linkSearch.DecisionApiKey", "linkSearch.DecisionModelName",
         "linkSearch.OpenRouterApiUrl", "linkSearch.OpenRouterApiKey", "linkSearch.OpenRouterModelName",
         "linkSearch.OpenAiApiUrl", "linkSearch.OpenAiApiKey", "linkSearch.OpenAiModelName",
+        "linkSearch.RankingCandidateLimit",
     };
 
-    internal static string Organize(string template, SettingsManager manager, JsonObject draft, bool enabled, RankingMode mode, DecisionProvider provider)
+    internal static string Organize(string template, SettingsManager manager, JsonObject draft, bool enabled, RankingMode mode, DecisionProvider provider, bool testing = false, string? testMessage = null)
     {
         var card = JsonNode.Parse(template)!.AsObject();
+        if (testing)
+        {
+            var waitingBody = new JsonArray();
+            AddHeading(waitingBody, manager.Text(LocalizedTextKey.SettingsRankingSection), false);
+            AddLabel(waitingBody, manager.Text(LocalizedTextKey.SettingsTestingConnection));
+            waitingBody.Add((JsonNode)ActionRow(Action(manager.Text(LocalizedTextKey.SettingsCancelTest), "cancel-test")));
+            card["body"] = waitingBody;
+            card["actions"] = new JsonArray();
+            return card.ToJsonString();
+        }
         var original = card["body"]!.AsArray();
         var fields = new Dictionary<string, JsonNode>(StringComparer.Ordinal);
         while (original.Count > 0)
@@ -199,11 +357,12 @@ internal static class SettingsLayout
 
         if (enabled)
         {
-            AddLabel(body, manager.Text(LocalizedTextKey.RankingModeLabel));
+            AddLabel(body, manager.Text(LocalizedTextKey.SettingsRankingService));
             body.Add((JsonNode)ActionRow(
-                Action(manager.Text(LocalizedTextKey.SettingsModeRerank), "mode", "rerank", mode == RankingMode.Rerank),
-                Action(manager.Text(LocalizedTextKey.SettingsModeNoul), "mode", "decision-noul", mode == RankingMode.DecisionNoul),
-                Action(manager.Text(LocalizedTextKey.SettingsModeChoice), "mode", "decision-choice", mode == RankingMode.DecisionChoice)));
+                Action(manager.Text(LocalizedTextKey.SettingsModeRerank), "backend", "rerank", mode == RankingMode.Rerank),
+                Action("OpenRouter", "backend", "openrouter", mode != RankingMode.Rerank && provider == DecisionProvider.OpenRouter),
+                Action("OpenAI", "backend", "openai", mode != RankingMode.Rerank && provider == DecisionProvider.OpenAi),
+                Action(manager.Text(LocalizedTextKey.SettingsProviderCustom), "backend", "system-one", mode != RankingMode.Rerank && provider == DecisionProvider.SystemOne)));
 
             if (mode == RankingMode.Rerank)
             {
@@ -211,11 +370,17 @@ internal static class SettingsLayout
             }
             else
             {
-                AddLabel(body, manager.Text(LocalizedTextKey.DecisionProviderLabel));
-                body.Add((JsonNode)ActionRow(
-                    Action(manager.Text(LocalizedTextKey.SettingsProviderCustom), "provider", "system-one", provider == DecisionProvider.SystemOne),
-                    Action("OpenRouter", "provider", "openrouter", provider == DecisionProvider.OpenRouter),
-                    Action("OpenAI", "provider", "openai", provider == DecisionProvider.OpenAi)));
+                if (provider == DecisionProvider.OpenAi)
+                {
+                    AddLabel(body, manager.Text(LocalizedTextKey.SettingsScoreMode));
+                }
+                else
+                {
+                    AddLabel(body, manager.Text(LocalizedTextKey.RankingModeLabel));
+                    body.Add((JsonNode)ActionRow(
+                        Action(manager.Text(LocalizedTextKey.SettingsModeNoul), "mode", "decision-noul", mode == RankingMode.DecisionNoul),
+                        Action(manager.Text(LocalizedTextKey.SettingsModeChoice), "mode", "decision-choice", mode == RankingMode.DecisionChoice)));
+                }
 
                 switch (provider)
                 {
@@ -232,6 +397,11 @@ internal static class SettingsLayout
                         break;
                 }
             }
+
+            AddFields(body, fields, "RankingCandidateLimit");
+            AddLabel(body, manager.Text(LocalizedTextKey.SettingsRankingPrivacy));
+            body.Add((JsonNode)ActionRow(Action(manager.Text(LocalizedTextKey.SettingsTestConnection), "test")));
+            if (!string.IsNullOrEmpty(testMessage)) AddLabel(body, testMessage);
         }
 
         AddHeading(body, manager.Text(LocalizedTextKey.SettingsSearchSection), true);

@@ -131,9 +131,6 @@ namespace LinkSearch.Services
                 
                 if (!response.IsSuccessStatusCode)
                 {
-                    // 非成功分支读取响应内容以便返回详细信息
-                    var errorContent = await response.Content.ReadAsStringAsync(effectiveToken).ConfigureAwait(false);
-                    
                     // 根据状态码确定错误类型
                     string errorType;
                     string errorMessage;
@@ -174,7 +171,7 @@ namespace LinkSearch.Services
                         errorMessage,
                         responseTimeMs,
                         (int)response.StatusCode,
-                        errorContent
+                        string.Empty
                     );
                 }
                 

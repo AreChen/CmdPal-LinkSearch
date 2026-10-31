@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using LinkSearch.Helpers;
 using LinkSearch.Presenters;
 using LinkSearch.Services;
+using Microsoft.CommandPalette.Extensions.Toolkit;
 using Xunit;
 
 namespace LinkSearch.Tests.Pages;
@@ -16,6 +17,7 @@ namespace LinkSearch.Tests.Pages;
 public sealed class LinkSearchPageTests
 {
     private const int PreserveSelectionRefresh = -2;
+    private const int StandardRefresh = -1;
 
     [Fact]
     public async Task UpdateSearchText_refreshes_results_without_forcing_first_item_selection()
@@ -112,13 +114,180 @@ public sealed class LinkSearchPageTests
         page.UpdateSearchText("trend", "trend paper");
         var finalQueryStarted = await WaitUntilAsync(() => handler.Queries.Contains("trend paper"), TimeSpan.FromSeconds(3));
         Assert.True(finalQueryStarted, $"Observed queries before releasing first request: {string.Join(", ", handler.Queries)}");
-        Assert.False(firstRequestToken.IsCancellationRequested);
+        Assert.True(firstRequestToken.IsCancellationRequested);
 
         releaseFirstRequest.SetResult();
 
         var finalQueryObserved = await WaitUntilAsync(() => handler.Queries.Contains("trend paper"), TimeSpan.FromSeconds(2));
         Assert.True(finalQueryObserved, $"Observed queries: {string.Join(", ", handler.Queries)}");
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Search_shows_original_results_before_ranking_and_reuses_items(bool useOpenAi)
+    {
+        using var temp = new TempSettingsFile();
+        var settings = RankingSettings(temp.Path);
+        if (useOpenAi)
+        {
+            settings.SetForTest("linkSearch.RankingMode", "decision-noul");
+            settings.SetForTest("linkSearch.DecisionProvider", "openai");
+            settings.SetForTest("linkSearch.OpenAiApiKey", "test-key");
+            settings.SetForTest("linkSearch.OpenAiModelName", "test-model");
+        }
+        var releaseRanking = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var rankingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var searchClient = new HttpClient(new FakeHttpMessageHandler((_, _) => Task.FromResult(TwoLinksResponse())));
+        using var rankingClient = new HttpClient(new FakeHttpMessageHandler(async (_, _) =>
+        {
+            rankingStarted.SetResult();
+            await releaseRanking.Task;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(useOpenAi
+                    ? "{\"answers\":[{\"type\":\"score\",\"name\":\"rel_1\",\"score\":3},{\"type\":\"score\",\"name\":\"rel_0\",\"score\":0}]}"
+                    : "{\"results\":[{\"index\":1,\"relevance_score\":0.9},{\"index\":0,\"relevance_score\":0.1}]}")
+            };
+        }));
+        var linkwarden = new LinkwardenService(settings, new SearchCache(TimeSpan.FromMinutes(5)), searchClient);
+        using var ranking = new RerankService(settings, rankingClient);
+        using var connection = new RerankConnectionTestService(settings);
+        using var page = new LinkSearchPage(settings, linkwarden, ranking, connection, new SearchResultPresenter(settings));
+        var rankedRefresh = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        page.ItemsChanged += (_, args) =>
+        {
+            if (page.GetItems() is [{ Title: "Second" }, ..]) rankedRefresh.TrySetResult(args.TotalItems);
+        };
+
+        page.UpdateSearchText("", "test");
+        Assert.Same(rankingStarted.Task, await Task.WhenAny(rankingStarted.Task, Task.Delay(TimeSpan.FromSeconds(3))));
+        var original = page.GetItems();
+        Assert.Equal("First", original[0].Title);
+        Assert.Equal("Second", original[1].Title);
+        releaseRanking.SetResult();
+        Assert.True(await WaitUntilAsync(() => page.GetItems()[0].Title == "Second", TimeSpan.FromSeconds(3)));
+        var ranked = page.GetItems();
+        Assert.Same(original[1], ranked[0]);
+        Assert.Same(original[0], ranked[1]);
+        Assert.Contains("Ranked", ranked[0].Subtitle);
+        Assert.Equal(StandardRefresh, await rankedRefresh.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public async Task Search_preserves_selection_when_ranking_does_not_change_order()
+    {
+        using var temp = new TempSettingsFile();
+        var settings = RankingSettings(temp.Path);
+        using var searchClient = new HttpClient(new FakeHttpMessageHandler((_, _) => Task.FromResult(TwoLinksResponse())));
+        using var rankingClient = new HttpClient(new FakeHttpMessageHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"results\":[{\"index\":0,\"relevance_score\":0.9},{\"index\":1,\"relevance_score\":0.1}]}")
+        })));
+        var linkwarden = new LinkwardenService(settings, new SearchCache(TimeSpan.FromMinutes(5)), searchClient);
+        using var ranking = new RerankService(settings, rankingClient);
+        using var connection = new RerankConnectionTestService(settings);
+        using var page = new LinkSearchPage(settings, linkwarden, ranking, connection, new SearchResultPresenter(settings));
+        var rankedRefresh = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        page.ItemsChanged += (_, args) =>
+        {
+            if (page.GetItems() is [{ Subtitle: var subtitle }, ..] && subtitle.Contains("Ranked", StringComparison.Ordinal))
+                rankedRefresh.TrySetResult(args.TotalItems);
+        };
+
+        page.UpdateSearchText("", "test");
+
+        Assert.Equal(PreserveSelectionRefresh, await rankedRefresh.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal("First", page.GetItems()[0].Title);
+    }
+
+    [Fact]
+    public async Task Search_displays_ranking_failure_with_original_results()
+    {
+        using var temp = new TempSettingsFile();
+        var settings = RankingSettings(temp.Path);
+        using var searchClient = new HttpClient(new FakeHttpMessageHandler((_, _) => Task.FromResult(TwoLinksResponse())));
+        using var rankingClient = new HttpClient(new FakeHttpMessageHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable))));
+        var linkwarden = new LinkwardenService(settings, new SearchCache(TimeSpan.FromMinutes(5)), searchClient);
+        using var ranking = new RerankService(settings, rankingClient);
+        using var connection = new RerankConnectionTestService(settings);
+        using var page = new LinkSearchPage(settings, linkwarden, ranking, connection, new SearchResultPresenter(settings));
+        var failedRefresh = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        page.ItemsChanged += (_, args) =>
+        {
+            if (page.GetItems() is [{ Subtitle: var subtitle }, ..] && subtitle.Contains("HTTP 503", StringComparison.Ordinal))
+                failedRefresh.TrySetResult(args.TotalItems);
+        };
+
+        page.UpdateSearchText("", "test");
+        Assert.True(await WaitUntilAsync(() => page.GetItems().Length > 0 && page.GetItems()[0].Subtitle.Contains("HTTP 503", StringComparison.Ordinal), TimeSpan.FromSeconds(3)));
+        Assert.Equal("First", page.GetItems()[0].Title);
+        Assert.Equal("Second", page.GetItems()[1].Title);
+        Assert.Equal(PreserveSelectionRefresh, await failedRefresh.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+    }
+
+    [Fact]
+    public async Task Search_cancels_old_ranking_and_ignores_a_late_response()
+    {
+        using var temp = new TempSettingsFile();
+        var settings = RankingSettings(temp.Path);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldToken = CancellationToken.None;
+        using var searchClient = new HttpClient(new FakeHttpMessageHandler((request, _) => Task.FromResult(
+            request.RequestUri!.Query.Contains("first", StringComparison.OrdinalIgnoreCase)
+                ? TwoLinksResponse()
+                : JsonResponse("New Result", "https://example.com/new"))));
+        using var rankingClient = new HttpClient(new FakeHttpMessageHandler(async (_, token) =>
+        {
+            oldToken = token;
+            started.SetResult();
+            await release.Task;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"results\":[{\"index\":1,\"relevance_score\":0.9},{\"index\":0,\"relevance_score\":0.1}]}")
+            };
+        }));
+        var linkwarden = new LinkwardenService(settings, new SearchCache(TimeSpan.FromMinutes(5)), searchClient);
+        using var ranking = new RerankService(settings, rankingClient);
+        using var connection = new RerankConnectionTestService(settings);
+        using var page = new LinkSearchPage(settings, linkwarden, ranking, connection, new SearchResultPresenter(settings));
+
+        try
+        {
+            page.UpdateSearchText("", "first");
+            Assert.Same(started.Task, await Task.WhenAny(started.Task, Task.Delay(TimeSpan.FromSeconds(3))));
+            page.UpdateSearchText("first", "second");
+            Assert.True(await WaitUntilAsync(() => ContainsItemTitle(page, "New Result"), TimeSpan.FromSeconds(3)));
+            Assert.True(oldToken.IsCancellationRequested);
+            release.TrySetResult();
+            await Task.Delay(100);
+            Assert.True(ContainsItemTitle(page, "New Result"));
+            Assert.False(ContainsItemTitle(page, "Second"));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+    }
+
+    private static SettingsManager RankingSettings(string path)
+    {
+        var settings = new SettingsManager(path, () => CultureInfo.GetCultureInfo("en-US"));
+        settings.SetForTest("linkSearch.LinkwardenBaseUrl", "https://cloud.linkwarden.app");
+        settings.SetForTest("linkSearch.LinkwardenApiKey", "valid-token");
+        settings.SetForTest("linkSearch.SearchDelayMilliseconds", "10");
+        settings.GetSettingForTest<ToggleSetting>("linkSearch.EnableRerank").Value = true;
+        settings.SetForTest("linkSearch.RerankApiUrl", "https://rerank.example/v1/rerank");
+        settings.SetForTest("linkSearch.RerankApiKey", "test-key");
+        settings.SetForTest("linkSearch.RerankModelName", "test-model");
+        return settings;
+    }
+
+    private static HttpResponseMessage TwoLinksResponse() => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent("{\"data\":[{\"name\":\"First\",\"url\":\"https://example.com/first\"},{\"name\":\"Second\",\"url\":\"https://example.com/second\"}]}")
+    };
 
     [Fact]
     public async Task UpdateSearchText_does_not_search_single_character_left_after_rapid_backspace()

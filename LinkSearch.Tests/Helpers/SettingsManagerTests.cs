@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
 using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 using LinkSearch.Helpers;
@@ -218,6 +219,7 @@ public sealed class SettingsManagerTests
         Assert.Null(FindField(card, "linkSearch.DecisionApiUrl"));
         Assert.Null(FindField(card, "linkSearch.OpenRouterApiUrl"));
         Assert.Null(FindField(card, "linkSearch.OpenAiApiUrl"));
+        Assert.Null(FindField(card, "linkSearch.RankingCandidateLimit"));
         Assert.Contains("Enable ranking", card.ToJsonString());
 
         var templateChanges = 0;
@@ -229,6 +231,8 @@ public sealed class SettingsManagerTests
         Assert.True(templateChanges > 0);
         card = JsonNode.Parse(form.TemplateJson)!;
         Assert.NotNull(FindField(card, "linkSearch.RerankApiUrl"));
+        Assert.NotNull(FindField(card, "linkSearch.RankingCandidateLimit"));
+        Assert.NotNull(FindAction(card, "test", null));
         Assert.Equal("password", FindField(card, "linkSearch.RerankApiKey")!["style"]!.GetValue<string>());
         Assert.Null(FindField(card, "linkSearch.OpenAiApiUrl"));
         Assert.Equal("https://draft.example", FindField(card, "linkSearch.LinkwardenBaseUrl")!["value"]!.GetValue<string>());
@@ -252,20 +256,22 @@ public sealed class SettingsManagerTests
         using var view = new LinkSearchSettingsView(settings);
         var form = Assert.IsAssignableFrom<FormContent>(Assert.Single(view.SettingsPage.GetContent()));
         form.SubmitForm("{}", "{\"linksearchAction\":\"toggle\"}");
-        form.SubmitForm("{}", "{\"linksearchAction\":\"mode\",\"value\":\"decision-noul\"}");
+        form.SubmitForm("{}", "{\"linksearchAction\":\"backend\",\"value\":\"system-one\"}");
         var card = JsonNode.Parse(form.TemplateJson)!;
         Assert.NotNull(FindField(card, "linkSearch.DecisionApiUrl"));
         Assert.Null(FindField(card, "linkSearch.RerankApiUrl"));
 
-        form.SubmitForm("{}", "{\"linksearchAction\":\"provider\",\"value\":\"openai\"}");
+        form.SubmitForm("{}", "{\"linksearchAction\":\"backend\",\"value\":\"openai\"}");
         card = JsonNode.Parse(form.TemplateJson)!;
         Assert.NotNull(FindField(card, "linkSearch.OpenAiApiUrl"));
         Assert.Null(FindField(card, "linkSearch.DecisionApiUrl"));
         Assert.Equal("password", FindField(card, "linkSearch.OpenAiApiKey")!["style"]!.GetValue<string>());
         Assert.Contains("https://developers.openai.com/api/docs/quickstart", card.ToJsonString());
         Assert.Contains("https://developers.openai.com/api/docs/guides/decisions", card.ToJsonString());
+        Assert.Contains("Score", card.ToJsonString());
+        Assert.DoesNotContain("\"linksearchAction\":\"mode\"", card.ToJsonString());
 
-        form.SubmitForm("{\"linkSearch.OpenAiApiKey\":\"new-openai-key\"}", "{\"linksearchAction\":\"provider\",\"value\":\"openrouter\"}");
+        form.SubmitForm("{\"linkSearch.OpenAiApiKey\":\"new-openai-key\"}", "{\"linksearchAction\":\"backend\",\"value\":\"openrouter\"}");
         card = JsonNode.Parse(form.TemplateJson)!;
         Assert.NotNull(FindField(card, "linkSearch.OpenRouterApiUrl"));
         Assert.Null(FindField(card, "linkSearch.OpenAiApiUrl"));
@@ -273,7 +279,7 @@ public sealed class SettingsManagerTests
         Assert.Contains("https://openrouter.ai/docs/quickstart", card.ToJsonString());
         Assert.Contains("https://openrouter.ai/docs/api/api-reference/alphadecisions/submit-a-decisions-request", card.ToJsonString());
 
-        form.SubmitForm("{\"linkSearch.OpenRouterApiKey\":\"new-router-key\"}", "{\"linksearchAction\":\"provider\",\"value\":\"openai\"}");
+        form.SubmitForm("{\"linkSearch.OpenRouterApiKey\":\"new-router-key\"}", "{\"linksearchAction\":\"backend\",\"value\":\"openai\"}");
         card = JsonNode.Parse(form.TemplateJson)!;
         Assert.Equal("new-openai-key", FindField(card, "linkSearch.OpenAiApiKey")!["value"]!.GetValue<string>());
         Assert.Equal(DecisionProvider.SystemOne, settings.DecisionProvider);
@@ -305,28 +311,145 @@ public sealed class SettingsManagerTests
 
         form.SubmitForm("{}", "{\"linksearchAction\":\"toggle\"}");
         var card = JsonNode.Parse(form.TemplateJson)!;
-        AssertSelection(card, "mode", "rerank", "\u2713 Rerank");
-        AssertSelection(card, "mode", "decision-noul", "Per item");
-        AssertSelection(card, "mode", "decision-choice", "Choice");
+        AssertSelection(card, "backend", "rerank", "\u2713 Rerank");
+        AssertSelection(card, "backend", "openrouter", "OpenRouter");
+        AssertSelection(card, "backend", "openai", "OpenAI");
+        AssertSelection(card, "backend", "system-one", "Custom");
 
+        form.SubmitForm("{}", "{\"linksearchAction\":\"backend\",\"value\":\"system-one\"}");
         form.SubmitForm("{}", "{\"linksearchAction\":\"mode\",\"value\":\"decision-choice\"}");
         card = JsonNode.Parse(form.TemplateJson)!;
-        AssertSelection(card, "mode", "rerank", "Rerank");
+        AssertSelection(card, "backend", "rerank", "Rerank");
         AssertSelection(card, "mode", "decision-choice", "\u2713 Choice");
-        AssertSelection(card, "provider", "system-one", "\u2713 Custom");
-        AssertSelection(card, "provider", "openrouter", "OpenRouter");
-        AssertSelection(card, "provider", "openai", "OpenAI");
+        AssertSelection(card, "backend", "system-one", "\u2713 Custom");
+        AssertSelection(card, "backend", "openrouter", "OpenRouter");
+        AssertSelection(card, "backend", "openai", "OpenAI");
 
-        form.SubmitForm("{}", "{\"linksearchAction\":\"provider\",\"value\":\"openrouter\"}");
+        form.SubmitForm("{}", "{\"linksearchAction\":\"backend\",\"value\":\"openrouter\"}");
         card = JsonNode.Parse(form.TemplateJson)!;
-        AssertSelection(card, "provider", "system-one", "Custom");
-        AssertSelection(card, "provider", "openrouter", "\u2713 OpenRouter");
-        AssertSelection(card, "provider", "openai", "OpenAI");
+        AssertSelection(card, "backend", "system-one", "Custom");
+        AssertSelection(card, "backend", "openrouter", "\u2713 OpenRouter");
+        AssertSelection(card, "backend", "openai", "OpenAI");
+    }
+
+    [Fact]
+    public void Existing_openai_choice_configuration_displays_score_without_losing_saved_mode_or_keys()
+    {
+        using var temp = new TempSettingsFile();
+        var settings = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        settings.GetSettingForTest<ToggleSetting>("linkSearch.EnableRerank").Value = true;
+        settings.SetForTest("linkSearch.RankingMode", "decision-choice");
+        settings.SetForTest("linkSearch.DecisionProvider", "openai");
+        settings.SetForTest("linkSearch.OpenAiApiKey", "saved-key");
+        using var view = new LinkSearchSettingsView(settings);
+        var form = Assert.IsAssignableFrom<FormContent>(Assert.Single(view.SettingsPage.GetContent()));
+        var card = JsonNode.Parse(form.TemplateJson)!;
+        Assert.Contains("Score", card.ToJsonString());
+        Assert.DoesNotContain("\"linksearchAction\":\"mode\"", card.ToJsonString());
+        form.SubmitForm("{}", "{\"linksearchAction\":\"backend\",\"value\":\"openrouter\"}");
+        card = JsonNode.Parse(form.TemplateJson)!;
+        AssertSelection(card, "mode", "decision-choice", "\u2713 Choice");
+        form.SubmitForm("{}", "{\"linksearchAction\":\"backend\",\"value\":\"openai\"}");
+        form.SubmitForm("{}", "{\"linksearchAction\":\"save\"}");
+        var reloaded = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        Assert.Equal(RankingMode.DecisionChoice, reloaded.RankingMode);
+        Assert.Equal("saved-key", reloaded.GetDecisionApiKey(DecisionProvider.OpenAi));
     }
 
     [Theory]
-    [InlineData("zh-CN", "启用重排序", "停用重排序", "重排序模式", "逐项判断", "决策模型服务", "自建", "官方配置教程", "决策 API 文档", "保存")]
-    [InlineData("en-US", "Enable ranking", "Disable ranking", "Ranking Mode", "Per item", "Decision provider", "Custom", "Setup guide", "Decisions API", "Save")]
+    [InlineData("", 50)]
+    [InlineData("invalid", 50)]
+    [InlineData("1", 2)]
+    [InlineData("40", 40)]
+    [InlineData("500", 200)]
+    public void Ranking_candidate_limit_uses_documented_default_and_bounds(string value, int expected)
+    {
+        using var temp = new TempSettingsFile();
+        var settings = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        Assert.Equal(50, settings.RankingCandidateLimit);
+        settings.SetForTest("linkSearch.RankingCandidateLimit", value);
+        Assert.Equal(expected, settings.RankingCandidateLimit);
+    }
+
+    [Theory]
+    [InlineData(false, false, "true", true)]
+    [InlineData(false, true, "true", false)]
+    [InlineData(true, true, "false", true)]
+    [InlineData(false, false, "invalid", false)]
+    public void Explicit_ranking_toggle_takes_precedence_over_environment(bool enabled, bool explicitlySet, string environment, bool expected)
+    {
+        Assert.Equal(expected, SettingsManager.ResolveRankingEnabled(enabled, explicitlySet, environment));
+    }
+
+    [Theory]
+    [InlineData("rerank", "RerankApiKey", true)]
+    [InlineData("rerank", "RerankApiKey", false)]
+    [InlineData("system-one", "DecisionApiKey", true)]
+    [InlineData("openrouter", "OpenRouterApiKey", true)]
+    [InlineData("openai", "OpenAiApiKey", true)]
+    public async Task Save_and_test_keeps_settings_open_and_displays_the_result(string backend, string keyName, bool success)
+    {
+        using var temp = new TempSettingsFile();
+        var settings = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        var completion = new TaskCompletionSource<RerankConnectionTestResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var page = new LinkSearchSettingsPage(settings, _ =>
+        {
+            started.TrySetResult();
+            return completion.Task;
+        });
+        settings.Settings.SettingsChanged += (_, _) => page.SettingsChanged();
+        var form = Assert.IsAssignableFrom<FormContent>(Assert.Single(page.GetContent()));
+        form.SubmitForm("{}", "{\"linksearchAction\":\"toggle\"}");
+        form.SubmitForm("{}", $"{{\"linksearchAction\":\"backend\",\"value\":\"{backend}\"}}");
+        var result = form.SubmitForm($"{{\"linkSearch.{keyName}\":\"saved-key\"}}", "{\"linksearchAction\":\"test\"}");
+
+        Assert.Equal(CommandResultKind.KeepOpen, result.Kind);
+        Assert.Equal("saved-key", settings.GetSettingForTest<TextSetting>($"linkSearch.{keyName}").Value);
+        Assert.Equal(backend == "rerank" ? RankingMode.Rerank : RankingMode.DecisionNoul, settings.RankingMode);
+        var reloaded = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        Assert.Equal("saved-key", reloaded.GetSettingForTest<TextSetting>($"linkSearch.{keyName}").Value);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var waiting = Assert.IsAssignableFrom<FormContent>(Assert.Single(page.GetContent()));
+        Assert.Contains("Testing ranking service", waiting.TemplateJson);
+        Assert.Null(FindField(JsonNode.Parse(waiting.TemplateJson), $"linkSearch.{keyName}"));
+        completion.SetResult(success
+            ? RerankConnectionTestResult.CreateSuccess(42)
+            : RerankConnectionTestResult.CreateFailure("AuthenticationError", "Invalid key"));
+        var until = DateTime.UtcNow.AddSeconds(3);
+        var expected = success ? "connection succeeded" : "connection failed";
+        string template;
+        do
+        {
+            await Task.Delay(20);
+            template = Assert.IsAssignableFrom<FormContent>(Assert.Single(page.GetContent())).TemplateJson;
+        } while (!template.Contains(expected, StringComparison.Ordinal) && DateTime.UtcNow < until);
+        Assert.Contains(expected, template);
+        Assert.NotNull(FindField(JsonNode.Parse(template), $"linkSearch.{keyName}"));
+    }
+
+    [Fact]
+    public async Task Canceling_connection_test_discards_a_late_success()
+    {
+        using var temp = new TempSettingsFile();
+        var settings = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
+        settings.GetSettingForTest<ToggleSetting>("linkSearch.EnableRerank").Value = true;
+        var completion = new TaskCompletionSource<RerankConnectionTestResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var page = new LinkSearchSettingsPage(settings, _ => completion.Task);
+        page.StartConnectionTest();
+        var waiting = Assert.IsAssignableFrom<FormContent>(Assert.Single(page.GetContent()));
+        Assert.NotNull(FindAction(JsonNode.Parse(waiting.TemplateJson)!, "cancel-test", null));
+        waiting.SubmitForm("{}", "{\"linksearchAction\":\"cancel-test\"}");
+        completion.SetResult(RerankConnectionTestResult.CreateSuccess(987654));
+        await Task.Delay(100);
+        var card = JsonNode.Parse(Assert.IsAssignableFrom<FormContent>(Assert.Single(page.GetContent())).TemplateJson)!;
+        Assert.DoesNotContain("987654", card.ToJsonString());
+        Assert.NotNull(FindField(card, "linkSearch.RerankApiKey"));
+    }
+
+    [Theory]
+    [InlineData("zh-CN", "启用重排序", "停用重排序", "重排序模式", "逐项判断", "排序服务", "自建", "官方配置教程", "决策 API 文档", "保存")]
+    [InlineData("en-US", "Enable ranking", "Disable ranking", "Ranking Mode", "Per item", "Ranking service", "Custom", "Setup guide", "Decisions API", "Save")]
     public void Settings_form_renders_controls_in_the_selected_language(
         string culture, string enable, string disable, string rankingLabel, string perItem,
         string providerLabel, string custom, string setupGuide, string decisionsGuide, string save)
@@ -340,17 +463,17 @@ public sealed class SettingsManagerTests
         Assert.Equal(save, card["actions"]![0]!["title"]!.GetValue<string>());
 
         form.SubmitForm("{}", "{\"linksearchAction\":\"toggle\"}");
-        form.SubmitForm("{}", "{\"linksearchAction\":\"mode\",\"value\":\"decision-noul\"}");
+        form.SubmitForm("{}", "{\"linksearchAction\":\"backend\",\"value\":\"system-one\"}");
         card = JsonNode.Parse(form.TemplateJson)!;
         Assert.Equal(disable, FindAction(card, "toggle", null)["title"]!.GetValue<string>());
         Assert.Contains(card["body"]!.AsArray(), item => item?["text"]?.GetValue<string>() == rankingLabel);
         Assert.Contains(card["body"]!.AsArray(), item => item?["text"]?.GetValue<string>() == providerLabel);
         Assert.Equal($"\u2713 {perItem}", FindAction(card, "mode", "decision-noul")["title"]!.GetValue<string>());
-        Assert.Equal($"\u2713 {custom}", FindAction(card, "provider", "system-one")["title"]!.GetValue<string>());
+        Assert.Equal($"\u2713 {custom}", FindAction(card, "backend", "system-one")["title"]!.GetValue<string>());
 
         foreach (var provider in new[] { "openrouter", "openai" })
         {
-            form.SubmitForm("{}", $"{{\"linksearchAction\":\"provider\",\"value\":\"{provider}\"}}");
+            form.SubmitForm("{}", $"{{\"linksearchAction\":\"backend\",\"value\":\"{provider}\"}}");
             card = JsonNode.Parse(form.TemplateJson)!;
             var guides = card["body"]!.AsArray()
                 .OfType<JsonObject>()
@@ -418,6 +541,7 @@ public sealed class SettingsManagerTests
         form.SubmitForm("{}", "{\"linksearchAction\":\"save\"}");
         var reloaded = new SettingsManager(temp.Path, () => CultureInfo.GetCultureInfo("en-US"));
         Assert.False(reloaded.EnableRerank);
+        Assert.True(reloaded.GetSettingForTest<ToggleSetting>("linkSearch.RankingEnabledExplicitlySet").Value);
         Assert.Equal(RankingMode.DecisionChoice, reloaded.RankingMode);
         Assert.Equal(DecisionProvider.OpenRouter, reloaded.DecisionProvider);
         Assert.Equal("updated-router-key", reloaded.DecisionApiKey);
